@@ -1,0 +1,341 @@
+/* Grundlegendes Layout für das Tablet */
+body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    background-color: #2b2b2b;
+    color: #e2e8f0;
+    margin: 0;
+    padding: 15px;
+    width: 100vw;
+    height: 100vh;
+    box-sizing: border-box;
+    overflow: hidden;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+}
+
+/* Das Dashboard füllt den Bildschirm aus */
+.dashboard {
+    width: 100%;
+    height: 100%;
+    max-width: 1920px;
+    max-height: 1080px;
+    display: flex;
+    flex-direction: column;
+    gap: 15px;
+}
+
+/* Kopfzeile */
+.header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    background: #383838;
+    padding: 15px 25px;
+    border-radius: 12px;
+    box-shadow: 0 4px 6px rgba(0,0,0,0.2);
+    flex-shrink: 0;
+}
+
+.header h1 {
+    margin: 0;
+    font-size: 1.6rem;
+    color: #f8fafc;
+}
+
+.header-right {
+    display: flex;
+    align-items: center;
+    gap: 20px;
+}
+
+.clock {
+    font-size: 1.8rem;
+    font-weight: bold;
+    color: #38bdf8;
+}
+
+/* Zahnradsymbol in der Kopfzeile */
+#settings-btn {
+    background: transparent;
+    border: none;
+    font-size: 1.6rem;
+    cursor: pointer;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    padding: 5px;
+    transition: transform 0.2s;
+}
+
+#settings-btn:hover {
+    transform: scale(1.1);
+}
+
+/* Hauptbereich: Grid-Aufteilung */
+.grid-container {
+    display: grid;
+    grid-template-columns: 1.6fr 1fr;
+    gap: 15px;
+    flex-grow: 1;
+    overflow: hidden;
+}
+
+.right-column {
+    display: flex;
+    flex-direction: column;
+    gap: 15px;
+    overflow: hidden;
+}
+
+/* Karten-Design */
+.card {
+    background: #383838;
+    border-radius: 12px;
+    padding: 20px;
+    box-shadow: 0 4px 6px rgba(0,0,0,0.2);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+}
+
+.card h2 {
+    margin-top: 0;
+    font-size: 1.1rem;
+    border-bottom: 2px solid #484848;
+    padding-bottom: 8px;
+    color: #94a3b8;
+    flex-shrink: 0;
+}
+
+/* Kalender-Listenbereich */
+#calendar-view {
+    flex-grow: 1;
+    overflow-y: auto;
+    padding-right: 5px;
+}
+
+.event-list {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+.event-item {
+    background: #424242;
+    padding: 14px 16px;
+    border-radius: 8px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    border-left: 4px solid #38bdf8;
+}
+
+.event-date {
+    font-size: 0.9rem;
+    color: #94a3b8;
+    font-weight: bold;
+}
+
+.event-title {
+    font-size: 1.05rem;
+    color: #f8fafc;
+}
+
+/* To-Do Eingabebereich */
+.todo-input-container {
+    display: flex;
+    gap: 10px;
+    margin-bottom: 12px;
+    flex-shrink: 0;
+}
+
+.todo-input-container input {
+    flex-grow: 1;
+    background: #424242;
+    border: 1px solid #525252;
+    border-radius: 8px;
+    padding: 12px 15px;
+    color: #e2e8f0;
+    font-size: 1rem;
+    outline: none;
+}
+
+.todo-input-container input:focus {
+    border-color: #38bdf8;
+}
+
+.todo-input-container button {
+    background: #38bdf8;
+    color: #0f172a;
+    border: none;
+    border-radius: 8px;
+    width: 48px;
+    font-size: 1.5rem;
+    font-weight: bold;
+    cursor: pointer;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+}
+
+.todo-input-container button:active {
+    background: #0284c7;
+}
+
+/* To-Do Liste */
+#todo-list {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    overflow-y: auto;
+}
+
+#todo-list li {
+    background: #424242;
+    padding: 12px 15px;
+    border-radius: 8px;
+    font-size: 1rem;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    cursor: pointer;
+    transition: background 0.2s;
+}
+
+#todo-list li:hover {
+    background: #4d4d4d;
+}
+
+#todo-list li.completed {
+    text-decoration: line-through;
+    color: #64748b;
+}
+
+/* Familien-Profile */
+.profiles {
+    display: flex;
+    gap: 12px;
+    margin-top: 5px;
+}
+
+.profile-badge {
+    padding: 10px 18px;
+    border-radius: 20px;
+    font-weight: bold;
+    color: white;
+    font-size: 0.95rem;
+    text-align: center;
+    box-shadow: 0 2px 4px rgba(0,0,0,0.2);
+}
+
+/* Einstellungs-Modal (Popup) */
+.modal {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100vw;
+    height: 100vh;
+    background: rgba(0, 0, 0, 0.75);
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    z-index: 1000;
+}
+
+.modal.hidden {
+    display: none !important;
+}
+
+.modal-content {
+    background: #383838;
+    padding: 25px 30px;
+    border-radius: 12px;
+    width: 90%;
+    max-width: 480px;
+    box-shadow: 0 10px 25px rgba(0, 0, 0, 0.4);
+    display: flex;
+    flex-direction: column;
+    gap: 18px;
+    border: 1px solid #484848;
+}
+
+.modal-content h2 {
+    margin: 0;
+    font-size: 1.2rem;
+    color: #f8fafc;
+    border-bottom: 2px solid #484848;
+    padding-bottom: 10px;
+}
+
+.form-group {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.form-group label {
+    font-size: 0.95rem;
+    color: #94a3b8;
+}
+
+.form-group input {
+    background: #424242;
+    border: 1px solid #525252;
+    border-radius: 8px;
+    padding: 12px 15px;
+    color: #e2e8f0;
+    font-size: 1rem;
+    outline: none;
+    width: 100%;
+    box-sizing: border-box;
+}
+
+.form-group input:focus {
+    border-color: #38bdf8;
+}
+
+.modal-buttons {
+    display: flex;
+    justify-content: flex-end;
+    gap: 12px;
+    margin-top: 5px;
+}
+
+.btn-primary {
+    background: #38bdf8;
+    color: #0f172a;
+    border: none;
+    border-radius: 8px;
+    padding: 10px 20px;
+    font-size: 0.95rem;
+    font-weight: bold;
+    cursor: pointer;
+    transition: background 0.2s;
+}
+
+.btn-primary:active {
+    background: #0284c7;
+}
+
+.btn-secondary {
+    background: #424242;
+    color: #e2e8f0;
+    border: none;
+    border-radius: 8px;
+    padding: 10px 20px;
+    font-size: 0.95rem;
+    font-weight: bold;
+    cursor: pointer;
+    transition: background 0.2s;
+}
+
+.btn-secondary:hover {
+    background: #4d4d4d;
+}
