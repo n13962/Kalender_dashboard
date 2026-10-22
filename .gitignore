@@ -1,7 +1,0 @@
-node_modules/
-.env
-.env.*
-!.env.example
-.calendar-source.json
-todos.json
-.DS_Store
