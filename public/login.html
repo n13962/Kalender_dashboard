@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="theme-color" content="#101827">
+    <title>Anmeldung | Familien-Dashboard</title>
+    <style>
+        :root {
+            color-scheme: dark;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+            background: #101827;
+            color: #f1f5f9;
+        }
+        * { box-sizing: border-box; }
+        body {
+            min-height: 100vh;
+            margin: 0;
+            display: grid;
+            place-items: center;
+            padding: 24px;
+            background: radial-gradient(ellipse at 50% 0%, #243244 0%, #101827 62%);
+        }
+        main {
+            width: min(100%, 380px);
+            padding: 32px;
+            border: 1px solid rgba(148, 163, 184, 0.22);
+            border-radius: 16px;
+            background: rgba(15, 23, 42, 0.92);
+            box-shadow: 0 24px 64px rgba(0, 0, 0, 0.34);
+        }
+        .mark {
+            display: grid;
+            width: 44px;
+            height: 44px;
+            place-items: center;
+            margin-bottom: 20px;
+            border-radius: 12px;
+            background: #fbbf24;
+            color: #111827;
+            font-size: 22px;
+            font-weight: 800;
+        }
+        h1 { margin: 0; font-size: 23px; line-height: 1.2; }
+        p { margin: 8px 0 24px; color: #94a3b8; font-size: 13px; }
+        form { display: grid; gap: 16px; }
+        label { display: grid; gap: 7px; color: #cbd5e1; font-size: 12px; font-weight: 650; }
+        input {
+            width: 100%;
+            min-height: 46px;
+            padding: 0 12px;
+            border: 1px solid #334155;
+            border-radius: 9px;
+            outline: none;
+            background: #0b1220;
+            color: #f8fafc;
+            font: inherit;
+            font-size: 15px;
+        }
+        input:focus { border-color: #fbbf24; box-shadow: 0 0 0 3px rgba(251, 191, 36, 0.16); }
+        button {
+            min-height: 46px;
+            margin-top: 4px;
+            border: 0;
+            border-radius: 9px;
+            background: #fbbf24;
+            color: #111827;
+            font: inherit;
+            font-size: 14px;
+            font-weight: 750;
+            cursor: pointer;
+        }
+        button:disabled { cursor: wait; opacity: 0.7; }
+        #login-status { min-height: 18px; margin: 0; color: #fca5a5; font-size: 12px; }
+        @media (max-width: 420px) { main { padding: 25px 21px; } }
+    </style>
+</head>
+<body>
+    <main>
+        <div class="mark" aria-hidden="true">F</div>
+        <h1>Familien-Dashboard</h1>
+        <p>Bitte melde dich an, um fortzufahren.</p>
+        <form id="login-form">
+            <label for="username">Benutzername
+                <input id="username" name="username" type="text" autocomplete="username" required autofocus>
+            </label>
+            <label for="password">Passwort
+                <input id="password" name="password" type="password" autocomplete="current-password" required>
+            </label>
+            <button id="login-submit" type="submit">Anmelden</button>
+            <p id="login-status" role="status" aria-live="polite"></p>
+        </form>
+    </main>
+    <script>
+        const loginForm = document.getElementById('login-form');
+        const loginStatus = document.getElementById('login-status');
+        const loginButton = document.getElementById('login-submit');
+        const requestedPath = new URLSearchParams(location.search).get('next') || '/';
+        const returnPath = requestedPath.startsWith('/') && !requestedPath.startsWith('//') ? requestedPath : '/';
+
+        loginForm.addEventListener('submit', async event => {
+            event.preventDefault();
+            loginStatus.innerText = 'Anmeldung wird geprueft...';
+            loginButton.disabled = true;
+            try {
+                const response = await fetch('/api/auth/login', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        username: document.getElementById('username').value,
+                        password: document.getElementById('password').value
+                    })
+                });
+                const result = await response.json();
+                if (!response.ok) throw new Error(result.error || 'Anmeldung fehlgeschlagen.');
+                location.replace(returnPath);
+            } catch (error) {
+                loginStatus.innerText = error.message;
+                loginButton.disabled = false;
+            }
+        });
+    </script>
+</body>
+</html>

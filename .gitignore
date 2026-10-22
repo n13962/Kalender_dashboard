@@ -3,5 +3,10 @@ node_modules/
 .env.*
 !.env.example
 .calendar-source.json
+.home-assistant-selection.json
+.home-assistant-weather.json
 todos.json
 .DS_Store
+.cameras.json
+camera-events/
+.sync-data.json
