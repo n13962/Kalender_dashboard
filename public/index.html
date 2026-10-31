@@ -1373,7 +1373,10 @@
                                 <p id="fire-subtitle" class="truncate text-xs text-slate-400">Lade Bezirk …</p>
                             </div>
                         </div>
-                        <span id="fire-updated" class="shrink-0 text-[11px] text-slate-500"></span>
+                        <div class="flex shrink-0 items-center gap-2">
+                            <span id="fire-updated" class="text-[11px] text-slate-500"></span>
+                            <button id="fire-refresh-button" type="button" onclick="refreshFireNow()" aria-label="Feuerwehr-Daten aktualisieren" title="Aktualisieren" class="flex h-10 w-10 items-center justify-center rounded-xl border border-slate-700 text-slate-200 hover:bg-slate-800"><i class="fa-solid fa-rotate"></i></button>
+                        </div>
                     </div>
                     <div class="flex flex-wrap items-center gap-2">
                         <label for="fire-district-select" class="sr-only">Bezirk</label>
@@ -2009,6 +2012,22 @@
                 <span id="footer-next-event" class="hidden max-w-full truncate text-amber-300"></span>
             </div>
         </footer>
+    </div>
+
+    <div id="fire-detail-sheet" class="fixed inset-0 z-[70] hidden items-end justify-center bg-black/70 sm:items-center sm:p-4" onclick="if (event.target === this) closeFireDetail()" role="dialog" aria-modal="true" aria-labelledby="fire-detail-title">
+        <div class="flex max-h-[88vh] w-full flex-col rounded-t-2xl border border-slate-700 bg-slate-900 shadow-2xl sm:max-w-2xl sm:rounded-2xl">
+            <div class="flex items-center justify-between gap-2 border-b border-slate-800 p-3">
+                <div class="min-w-0">
+                    <h3 id="fire-detail-title" class="text-base font-bold leading-tight text-slate-100">Einsätze</h3>
+                    <p id="fire-detail-sub" class="text-[11px] text-slate-400"></p>
+                </div>
+                <div class="flex shrink-0 gap-2">
+                    <button type="button" onclick="loadFireDetail(true)" aria-label="Aktualisieren" class="flex h-10 w-10 items-center justify-center rounded-xl border border-slate-700 text-slate-200 hover:bg-slate-800"><i id="fire-detail-refresh-icon" class="fa-solid fa-rotate"></i></button>
+                    <button type="button" onclick="closeFireDetail()" aria-label="Schließen" class="flex h-10 w-10 items-center justify-center rounded-xl border border-slate-700 text-slate-200 hover:bg-slate-800"><i class="fa-solid fa-xmark"></i></button>
+                </div>
+            </div>
+            <div id="fire-detail-body" class="space-y-3 overflow-y-auto p-3 pb-6"></div>
+        </div>
     </div>
 
     <div id="night-mode-screen" onclick="dismissNightScreen()" class="fixed inset-0 z-[80] hidden bg-black text-white flex-col items-center justify-center text-center px-6 cursor-pointer">
@@ -5434,6 +5453,100 @@
             </div>`;
         }
 
+        let fireDetailScope = null;
+        let fireDetailRequest = 0;
+
+        async function refreshFireNow() {
+            const icon = document.querySelector('#fire-refresh-button i');
+            icon?.classList.add('fa-spin');
+            const district = fireClient.view.district;
+            try {
+                const response = await fetch(`/api/fire?district=${encodeURIComponent(district)}&refresh=1`, { cache: 'no-store' });
+                if (!response.ok) throw new Error();
+                await fetchFireData(true);
+            } catch (error) {
+                fireClient.error = true;
+                if (state.currentTab === 'fire') renderFireTab();
+            } finally {
+                icon?.classList.remove('fa-spin');
+            }
+        }
+
+        function openFireDetail(scope) {
+            fireDetailScope = scope;
+            const sheet = document.getElementById('fire-detail-sheet');
+            sheet.classList.remove('hidden');
+            sheet.classList.add('flex');
+            document.body.classList.add('overflow-hidden');
+            document.getElementById('fire-detail-body').innerHTML = '<p class="text-sm text-slate-400">Lade Details …</p>';
+            loadFireDetail(false);
+        }
+
+        function closeFireDetail() {
+            fireDetailScope = null;
+            const sheet = document.getElementById('fire-detail-sheet');
+            sheet.classList.add('hidden');
+            sheet.classList.remove('flex');
+            document.body.classList.remove('overflow-hidden');
+        }
+
+        document.addEventListener('keydown', event => { if (event.key === 'Escape' && fireDetailScope) closeFireDetail(); });
+
+        function fireIncidentGroups(stations) {
+            const groups = new Map();
+            stations.forEach(station => {
+                const lines = (station.info || []).filter(line => !/^(im Einsatz seit|alarmiert)/i.test(line));
+                const since = (station.info || []).find(line => /^(im Einsatz seit|alarmiert)/i.test(line)) || '';
+                const key = lines.join('|') || '–';
+                if (!groups.has(key)) groups.set(key, { lines, items: [] });
+                groups.get(key).items.push({ station, since });
+            });
+            return [...groups.values()].sort((a, b) => b.items.length - a.items.length);
+        }
+
+        function fireDetailDistrictHtml(district) {
+            const groups = fireIncidentGroups(district.stations);
+            return `<section class="space-y-2">
+                <h4 class="flex flex-wrap items-baseline justify-between gap-x-2 text-sm font-bold text-amber-200"><span>Bezirk ${escapeHtml(district.name)}</span><span class="text-[11px] font-normal text-slate-400">${district.stations.length} FF · ${district.incidentCount} ${district.incidentCount === 1 ? 'Einsatz' : 'Einsätze'}</span></h4>
+                ${groups.map(group => {
+                    const alerted = group.items.some(item => item.station.status === 'orange');
+                    return `<div class="rounded-xl border ${alerted ? 'border-amber-500/50 bg-amber-950/30' : 'border-red-500/40 bg-red-950/30'} p-3">
+                        <p class="text-sm font-bold text-slate-100">${escapeHtml(group.lines[0] || 'Einsatz ohne Beschreibung')}</p>
+                        ${group.lines.slice(1).map(line => `<p class="text-xs text-slate-200">${escapeHtml(line)}</p>`).join('')}
+                        <p class="mt-2 text-[11px] font-semibold text-slate-300">${group.items.length} ${group.items.length === 1 ? 'Feuerwehr' : 'Feuerwehren'}${alerted ? ' (alarmiert)' : ''}:</p>
+                        <ul class="mt-1 space-y-1">${group.items.map(item => `<li class="flex flex-col gap-0.5 text-xs text-slate-200 sm:flex-row sm:items-start sm:justify-between sm:gap-2"><span class="min-w-0 font-semibold">${escapeHtml(item.station.name)}</span><span class="shrink-0 text-[11px] text-slate-400 sm:text-right">${escapeHtml(item.since.replace(/^im Einsatz /i, ''))}</span></li>`).join('')}</ul>
+                    </div>`;
+                }).join('')}
+            </section>`;
+        }
+
+        async function loadFireDetail(force) {
+            const scope = fireDetailScope;
+            if (!scope) return;
+            const requestId = ++fireDetailRequest;
+            const icon = document.getElementById('fire-detail-refresh-icon');
+            icon.classList.add('fa-spin');
+            const query = scope === 'all'
+                ? `scope=all&district=${encodeURIComponent(fireClient.view.district)}`
+                : `district=${encodeURIComponent(scope)}`;
+            try {
+                const response = await fetch(`/api/fire/active?${query}${force ? '&refresh=1' : ''}`, { cache: 'no-store' });
+                const result = await response.json();
+                if (!response.ok) throw new Error(result.error || 'Details konnten nicht geladen werden.');
+                if (requestId !== fireDetailRequest || fireDetailScope !== scope) return;
+                const title = scope === 'all' ? 'Niederösterreich' : `Bezirk ${result.districts[0]?.name || fireClient.districts.find(d => d.code === scope)?.name || ''}`;
+                document.getElementById('fire-detail-title').textContent = `Einsätze – ${title}`;
+                document.getElementById('fire-detail-sub').textContent = `${result.stationCount} Feuerwehren im Einsatz · ${result.incidentCount} Einsätze gemeldet · Stand ${new Date(result.updatedAt).toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}`;
+                document.getElementById('fire-detail-body').innerHTML = result.districts.length
+                    ? result.districts.map(fireDetailDistrictHtml).join('')
+                    : '<p class="text-sm text-slate-300">Aktuell ist keine Feuerwehr im Einsatz.</p>';
+            } catch (error) {
+                if (requestId === fireDetailRequest) document.getElementById('fire-detail-body').innerHTML = `<p class="text-sm text-rose-300">${escapeHtml(error.message || 'Details konnten nicht geladen werden.')}</p>`;
+            } finally {
+                if (requestId === fireDetailRequest) icon.classList.remove('fa-spin');
+            }
+        }
+
         function renderFireOverview(data) {
             const box = document.getElementById('fire-overview');
             const items = data.overview || [];
@@ -5449,9 +5562,9 @@
                     <span class="text-[11px] text-slate-400">${activeDistricts.length} von ${items.length} Bezirken aktiv</span>
                 </div>
                 <div class="grid grid-cols-3 gap-2 text-center">
-                    <div class="rounded-lg bg-slate-900/70 p-2"><p class="text-2xl font-black ${totalStations ? 'text-red-300' : 'text-emerald-300'}">${totalStations}</p><p class="text-[10px] text-slate-400">Feuerwehren unterwegs</p></div>
-                    <div class="rounded-lg bg-slate-900/70 p-2"><p class="text-2xl font-black text-slate-100">${totalIncidents}</p><p class="text-[10px] text-slate-400">Einsätze gemeldet</p></div>
-                    <div class="rounded-lg bg-slate-900/70 p-2"><p class="text-2xl font-black text-amber-300">${own ? own.stations : 0}</p><p class="text-[10px] text-slate-400">in ${escapeHtml(own?.name || 'meinem Bezirk')}</p></div>
+                    <button type="button" onclick="openFireDetail('all')" class="min-h-16 rounded-lg bg-slate-900/70 p-2 hover:bg-slate-900"><p class="text-2xl font-black ${totalStations ? 'text-red-300' : 'text-emerald-300'}">${totalStations}</p><p class="text-[10px] text-slate-400">Feuerwehren unterwegs</p></button>
+                    <button type="button" onclick="openFireDetail('all')" class="min-h-16 rounded-lg bg-slate-900/70 p-2 hover:bg-slate-900"><p class="text-2xl font-black text-slate-100">${totalIncidents}</p><p class="text-[10px] text-slate-400">Einsätze gemeldet</p></button>
+                    <button type="button" onclick="openFireDetail('${escapeHtml(data.districtCode)}')" class="min-h-16 rounded-lg bg-slate-900/70 p-2 hover:bg-slate-900"><p class="text-2xl font-black text-amber-300">${own ? own.stations : 0}</p><p class="text-[10px] text-slate-400">in ${escapeHtml(own?.name || 'meinem Bezirk')}</p></button>
                 </div>
                 <div class="flex flex-wrap gap-1.5">
                     ${activeDistricts.map(item => `<button type="button" onclick="setFireDistrict('${escapeHtml(item.code)}')" class="min-h-8 rounded-full border px-2.5 text-[11px] ${item.code === data.districtCode ? 'border-amber-400/60 bg-amber-500/10 text-amber-200' : 'border-slate-600 text-slate-300 hover:bg-slate-800'}">${escapeHtml(item.name)} · ${item.stations} FF${item.incidents ? ` · ${item.incidents} ${item.incidents === 1 ? 'Einsatz' : 'Einsätze'}` : ''}</button>`).join('') || '<p class="text-[11px] text-slate-400">Aktuell ist in ganz Niederösterreich keine Feuerwehr im Einsatz.</p>'}
@@ -5475,14 +5588,14 @@
             document.getElementById('fire-subtitle').textContent = `${data.district} · ${filtered ? `${fireClient.view.stations.length} von ${data.stationCount}` : data.stationCount} Feuerwehren`;
             document.getElementById('fire-updated').textContent = `${data.stale ? 'Veraltet · ' : ''}Stand ${new Date(data.updatedAt).toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}`;
             summary.innerHTML = `
-                <div class="rounded-xl border ${visible.active.length ? 'border-red-500/50 bg-red-950/40' : 'border-emerald-500/30 bg-emerald-950/20'} p-3 text-center">
+                <button type="button" onclick="openFireDetail('${escapeHtml(data.districtCode)}')" aria-label="Details zu den Feuerwehren im Einsatz öffnen" class="min-h-16 rounded-xl border ${visible.active.length ? 'border-red-500/50 bg-red-950/40' : 'border-emerald-500/30 bg-emerald-950/20'} p-3 text-center hover:brightness-125">
                     <p class="text-3xl font-black ${visible.active.length ? 'text-red-300' : 'text-emerald-300'}">${visible.active.length}</p>
-                    <p class="text-xs text-slate-300">Feuerwehren im Einsatz</p>
-                </div>
-                <div class="rounded-xl border border-slate-700 bg-slate-800/50 p-3 text-center">
+                    <p class="text-xs text-slate-300">Feuerwehren im Einsatz <i class="fa-solid fa-chevron-right text-[9px]"></i></p>
+                </button>
+                <button type="button" onclick="openFireDetail('${escapeHtml(data.districtCode)}')" aria-label="Details zu den Einsätzen im Bezirk öffnen" class="min-h-16 rounded-xl border border-slate-700 bg-slate-800/50 p-3 text-center hover:brightness-125">
                     <p class="text-3xl font-black text-slate-100">${data.incidentCount}</p>
-                    <p class="text-xs text-slate-300">Einsätze im Bezirk</p>
-                </div>`;
+                    <p class="text-xs text-slate-300">Einsätze im Bezirk <i class="fa-solid fa-chevron-right text-[9px]"></i></p>
+                </button>`;
             renderFireOverview(data);
             const alerted = visible.alerted.map(item => fireCardHtml(item, 'orange')).join('');
             active.innerHTML = (visible.active.map(item => fireCardHtml(item, 'red')).join('') + alerted) || '<p class="text-sm text-slate-400">Aktuell ist keine Feuerwehr im Einsatz.</p>';

@@ -767,9 +767,10 @@ async function refreshFireData(district) {
     fireState.error = null;
 }
 
-function ensureFireData(district) {
+function ensureFireData(district, force = false) {
     const fireState = getFireState(district);
     if (fireState.pending) return fireState.pending;
+    if (force) fireState.lastFetch = 0;
     if (Date.now() - fireState.lastFetch < 5000) return Promise.resolve();
     fireState.lastFetch = Date.now();
     fireState.pending = refreshFireData(district)
@@ -795,11 +796,45 @@ app.get('/api/fire/districts', (req, res) => {
     res.json({ defaultDistrict: FIRE_DEFAULT_DISTRICT, districts: FIRE_DISTRICTS });
 });
 
+app.get('/api/fire/active', async (req, res) => {
+    const scope = req.query.scope === 'all' ? 'all' : parseFireDistrict(req.query.district);
+    if (!scope) return res.status(400).json({ error: 'Unbekannter Bezirk.' });
+    const force = req.query.refresh === '1';
+    let codes;
+    if (scope === 'all') {
+        const seed = parseFireDistrict(req.query.district) || FIRE_DEFAULT_DISTRICT;
+        await ensureFireData(seed, force);
+        const overview = getFireState(seed).overview || [];
+        codes = overview.filter(item => item.stations > 0 || item.incidents > 0).map(item => item.code);
+        if (!codes.includes(seed)) codes.push(seed);
+    } else {
+        codes = [scope];
+    }
+    const now = Date.now();
+    codes.forEach(code => fireViewedAt.set(code, now));
+    await Promise.all(codes.map(code => ensureFireData(code, force && code !== (scope === 'all' ? parseFireDistrict(req.query.district) || FIRE_DEFAULT_DISTRICT : '') )));
+    const districts = codes.map(code => {
+        const state = getFireState(code);
+        const stations = [...state.stations.values()]
+            .filter(station => station.status === 'red' || station.status === 'orange')
+            .map(({ id, name, info, status, startedAt }) => ({ id, name, info, status, startedAt }));
+        return { code, name: fireDistrictName(code), incidentCount: state.summary?.incidentCount ?? 0, stations };
+    }).filter(item => item.stations.length || item.incidentCount)
+      .sort((a, b) => b.stations.length - a.stations.length);
+    res.set('Cache-Control', 'no-store').json({
+        scope,
+        districts,
+        stationCount: districts.reduce((sum, item) => sum + item.stations.length, 0),
+        incidentCount: districts.reduce((sum, item) => sum + item.incidentCount, 0),
+        updatedAt: new Date().toISOString()
+    });
+});
+
 app.get('/api/fire', async (req, res) => {
     const district = parseFireDistrict(req.query.district);
     if (!district) return res.status(400).json({ error: 'Unbekannter Bezirk.' });
     fireViewedAt.set(district, Date.now());
-    await ensureFireData(district);
+    await ensureFireData(district, req.query.refresh === '1');
     const fireState = getFireState(district);
     if (!fireState.updatedAt) return res.status(502).json({ error: 'Feuerwehr-Daten sind gerade nicht erreichbar.' });
     const stations = [...fireState.stations.values()];
