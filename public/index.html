@@ -1370,10 +1370,23 @@
                             <i class="fa-solid fa-fire-flame-curved text-red-400 text-lg"></i>
                             <div class="min-w-0">
                                 <h2 class="text-lg font-bold text-slate-100">Feuerwehr-Einsätze</h2>
-                                <p id="fire-subtitle" class="truncate text-xs text-slate-400">Bezirk Gmünd</p>
+                                <p id="fire-subtitle" class="truncate text-xs text-slate-400">Lade Bezirk …</p>
                             </div>
                         </div>
                         <span id="fire-updated" class="shrink-0 text-[11px] text-slate-500"></span>
+                    </div>
+                    <div class="flex flex-wrap items-center gap-2">
+                        <label for="fire-district-select" class="sr-only">Bezirk</label>
+                        <select id="fire-district-select" onchange="setFireDistrict(this.value)" class="min-h-10 min-w-0 flex-1 rounded-xl border border-slate-700 bg-slate-900 px-3 text-xs text-slate-100 sm:flex-none"></select>
+                        <button id="fire-filter-toggle" type="button" onclick="toggleFireFilter()" aria-expanded="false" class="min-h-10 rounded-xl border border-indigo-400/40 px-3 text-xs font-bold text-indigo-200 hover:bg-indigo-500/10">Feuerwehren wählen</button>
+                    </div>
+                    <div id="fire-filter-panel" class="hidden space-y-2 rounded-xl border border-indigo-500/20 bg-slate-950 p-3">
+                        <div class="flex gap-2">
+                            <input id="fire-filter-search" type="search" oninput="renderFireFilterList()" placeholder="Feuerwehr suchen" aria-label="Feuerwehr suchen" class="min-h-10 min-w-0 flex-1 rounded-xl border border-slate-700 bg-slate-900 px-3 text-xs text-slate-100">
+                            <button type="button" onclick="clearFireStations()" class="min-h-10 shrink-0 rounded-xl border border-slate-700 px-3 text-xs text-slate-300 hover:bg-slate-800">Alle anzeigen</button>
+                        </div>
+                        <p class="text-[10px] text-slate-500">Nichts angehakt = alle Feuerwehren des Bezirks.</p>
+                        <div id="fire-filter-list" class="grid max-h-60 gap-1 overflow-y-auto sm:grid-cols-2"></div>
                     </div>
                     <div id="fire-summary" class="grid grid-cols-2 gap-3"></div>
                     <div>
@@ -1384,7 +1397,7 @@
                         <h3 class="mb-2 text-xs font-bold uppercase tracking-wide text-slate-400">Zuletzt ausgerückt</h3>
                         <div id="fire-history" class="grid gap-2 sm:grid-cols-2"></div>
                     </div>
-                    <p class="text-[11px] text-slate-500">Quelle: FF Krems/Wastl (Bezirksalarmzentrale Gmünd). Nur zur Information – bei Notfällen 122.</p>
+                    <p class="text-[11px] text-slate-500">Quelle: FF Krems/Wastl (NÖ-Alarmzentralen). Nur zur Information – bei Notfällen 122.</p>
                 </div>
                 <div id="tab-cameras" class="tab-content hidden space-y-4 rounded-2xl border border-indigo-500/30 bg-slate-900/80 p-4 shadow-sm">
                     <div class="flex items-center justify-between gap-3 border-b border-indigo-500/20 pb-3">
@@ -2444,6 +2457,7 @@
         const TASKS_STORAGE_KEY = 'familien-dashboard-tasks';
         const HABITS_STORAGE_KEY = 'familien-dashboard-habits';
         const SHOPPING_STORAGE_KEY = 'familien-dashboard-shopping';
+        const FIRE_VIEW_STORAGE_KEY = 'familien-dashboard-fire-view';
         const POINTS_STORAGE_KEY = 'familien-dashboard-points';
         const FOOTER_SETTINGS_KEY = 'familien-dashboard-footer-settings';
         let pointSystemEnabled = false;
@@ -3191,20 +3205,126 @@
 
         let fireTelegramRecipients = [];
         let fireTelegramEnabled = true;
+        let fireSubEdit = null;
+        const fireStationCache = {};
+
+        function fireSubscriptionSummary(recipient) {
+            const subs = recipient.subscriptions || [];
+            if (!subs.length) return 'Keine Alarme';
+            return subs.map(sub => {
+                const name = fireClient.districts.find(district => district.code === sub.district)?.name || sub.district;
+                return `${name}: ${sub.stations.length ? `${sub.stations.length} FF` : 'alle FF'}`;
+            }).join(' · ');
+        }
+
+        async function loadFireStationsFor(code) {
+            if (fireStationCache[code]) return fireStationCache[code];
+            const response = await fetch(`/api/fire?district=${encodeURIComponent(code)}`, { cache: 'no-store' });
+            const result = await response.json();
+            if (!response.ok) throw new Error(result.error || 'Feuerwehren konnten nicht geladen werden.');
+            fireStationCache[code] = result.stations;
+            return result.stations;
+        }
+
+        function fireSubEditorHtml() {
+            const draft = fireSubEdit.draft;
+            const used = draft.map(sub => sub.district);
+            const free = fireClient.districts.filter(district => !used.includes(district.code));
+            return `<div class="mt-2 space-y-2 border-t border-slate-800 pt-2">
+                ${draft.map((sub, subIndex) => `
+                    <div class="rounded-lg border border-slate-800 bg-slate-950 p-2">
+                        <div class="flex items-center justify-between gap-2">
+                            <p class="text-xs font-bold text-slate-100">Bezirk ${escapeHtml(fireClient.districts.find(district => district.code === sub.district)?.name || sub.district)}</p>
+                            <button type="button" onclick="removeFireSubDistrict(${subIndex})" class="rounded-lg px-2 py-1 text-[11px] text-rose-300 hover:bg-rose-500/10">Bezirk entfernen</button>
+                        </div>
+                        <label class="mt-1 flex min-h-9 items-center gap-2 text-xs text-slate-200"><input type="checkbox" ${sub.stations.length ? '' : 'checked'} onchange="setFireSubAll(${subIndex}, this.checked)" class="h-4 w-4"> Alle Feuerwehren des Bezirks</label>
+                        <div class="grid max-h-48 gap-1 overflow-y-auto sm:grid-cols-2">
+                            ${(fireStationCache[sub.district] || []).map(station => `
+                                <label class="flex min-h-9 items-center gap-2 rounded px-2 text-xs text-slate-300 hover:bg-slate-900"><input type="checkbox" ${sub.stations.includes(station.id) ? 'checked' : ''} onchange="toggleFireSubStation(${subIndex}, '${escapeHtml(station.id)}')" class="h-4 w-4"><span class="truncate">${escapeHtml(station.name)}</span></label>`).join('') || '<p class="text-[11px] text-slate-500">Lade Feuerwehren …</p>'}
+                        </div>
+                    </div>`).join('') || '<p class="text-[11px] text-amber-300">Kein Bezirk gewählt – diese Person bekommt keine Alarme.</p>'}
+                <div class="flex flex-wrap gap-2">
+                    <select id="fire-sub-add-select" aria-label="Bezirk hinzufügen" class="min-h-10 min-w-0 flex-1 rounded-xl border border-slate-700 bg-slate-900 px-3 text-xs text-slate-100">${free.map(district => `<option value="${escapeHtml(district.code)}">${escapeHtml(district.name)}</option>`).join('')}</select>
+                    <button type="button" onclick="addFireSubDistrict()" ${free.length ? '' : 'disabled'} class="min-h-10 rounded-xl border border-indigo-400/40 px-3 text-xs font-bold text-indigo-200 hover:bg-indigo-500/10">Bezirk hinzufügen</button>
+                </div>
+                <div class="flex gap-2">
+                    <button type="button" onclick="saveFireSubscriptions()" class="min-h-10 rounded-xl bg-amber-500 px-4 text-xs font-bold text-slate-950 hover:bg-amber-600">Speichern</button>
+                    <button type="button" onclick="closeFireSubEditor()" class="min-h-10 rounded-xl border border-slate-700 px-4 text-xs text-slate-300 hover:bg-slate-800">Abbrechen</button>
+                </div>
+            </div>`;
+        }
+
+        function openFireSubEditor(index) {
+            if (fireSubEdit?.index === index) return closeFireSubEditor();
+            const subs = fireTelegramRecipients[index].subscriptions || [];
+            fireSubEdit = { index, draft: subs.map(sub => ({ district: sub.district, stations: [...sub.stations] })) };
+            renderFireTelegramRecipients();
+            fireSubEdit.draft.forEach(sub => loadFireSubStations(sub.district));
+        }
+
+        function closeFireSubEditor() {
+            fireSubEdit = null;
+            renderFireTelegramRecipients();
+        }
+
+        async function loadFireSubStations(code) {
+            try { await loadFireStationsFor(code); } catch (error) { fireStationCache[code] = []; }
+            if (fireSubEdit) renderFireTelegramRecipients();
+        }
+
+        function addFireSubDistrict() {
+            const code = document.getElementById('fire-sub-add-select')?.value;
+            if (!code) return;
+            fireSubEdit.draft.push({ district: code, stations: [] });
+            renderFireTelegramRecipients();
+            loadFireSubStations(code);
+        }
+
+        function removeFireSubDistrict(subIndex) {
+            fireSubEdit.draft.splice(subIndex, 1);
+            renderFireTelegramRecipients();
+        }
+
+        function setFireSubAll(subIndex, checked) {
+            if (checked) fireSubEdit.draft[subIndex].stations = [];
+            renderFireTelegramRecipients();
+        }
+
+        function toggleFireSubStation(subIndex, id) {
+            const sub = fireSubEdit.draft[subIndex];
+            sub.stations = sub.stations.includes(id) ? sub.stations.filter(item => item !== id) : [...sub.stations, id];
+            renderFireTelegramRecipients();
+        }
+
+        async function saveFireSubscriptions() {
+            const recipients = fireTelegramRecipients.map((recipient, index) => index === fireSubEdit.index ? { ...recipient, subscriptions: fireSubEdit.draft } : recipient);
+            try {
+                await persistFireTelegramSettings(fireTelegramEnabled, recipients);
+                fireSubEdit = null;
+                renderFireTelegramRecipients();
+            } catch (error) {
+                document.getElementById('fire-telegram-status').textContent = error.message || 'Abos konnten nicht gespeichert werden.';
+            }
+        }
 
         function renderFireTelegramRecipients() {
             const container = document.getElementById('fire-telegram-recipients');
             container.innerHTML = fireTelegramRecipients.length
                 ? fireTelegramRecipients.map((recipient, index) => `
-                    <div class="flex items-center justify-between gap-3 rounded-lg border border-slate-800 bg-slate-900/70 px-3 py-2">
+                    <div class="rounded-lg border border-slate-800 bg-slate-900/70 px-3 py-2">
+                      <div class="flex flex-wrap items-center justify-between gap-2">
                         <div class="min-w-0">
                             <p class="truncate text-xs font-semibold text-slate-100">${escapeHtml(recipient.name)}</p>
                             <p class="truncate text-[10px] text-slate-400">${escapeHtml(recipient.chatId)}</p>
+                            <p class="text-[10px] text-indigo-300">${escapeHtml(fireSubscriptionSummary(recipient))}</p>
                         </div>
-                        <div class="flex shrink-0 items-center gap-1">
+                        <div class="flex shrink-0 flex-wrap items-center gap-1">
+                            <button type="button" onclick="openFireSubEditor(${index})" aria-expanded="${fireSubEdit?.index === index}" class="rounded-lg px-2 py-2 text-xs text-indigo-300 hover:bg-indigo-500/10"><i class="fa-solid fa-fire-extinguisher"></i> Feuerwehren</button>
                             <button type="button" onclick="testFireTelegramRecipient(${index}, this)" aria-label="Testnachricht an ${escapeHtml(recipient.name)} senden" class="rounded-lg px-2 py-2 text-xs text-amber-300 hover:bg-amber-500/10"><i class="fa-solid fa-paper-plane"></i> Test</button>
                             <button type="button" onclick="removeFireTelegramRecipient(${index})" aria-label="Empfänger ${escapeHtml(recipient.name)} entfernen" class="rounded-lg px-2 py-2 text-xs text-rose-300 hover:bg-rose-500/10">Entfernen</button>
-                        </div>
+                      </div>
+                      </div>
+                      ${fireSubEdit?.index === index ? fireSubEditorHtml() : ''}
                     </div>`).join('')
                 : '<p class="text-[11px] text-slate-500">Noch keine Empfänger eingetragen.</p>';
         }
@@ -3287,7 +3407,7 @@
             const button = document.getElementById('fire-telegram-add-button');
             button.disabled = true;
             try {
-                await persistFireTelegramSettings(fireTelegramEnabled, [...fireTelegramRecipients, { name, chatId }]);
+                await persistFireTelegramSettings(fireTelegramEnabled, [...fireTelegramRecipients, { name, chatId, subscriptions: [{ district: fireClient.view.district, stations: [] }] }]);
                 nameInput.value = '';
                 idInput.value = '';
             } catch (error) {
@@ -3298,6 +3418,7 @@
         }
 
         async function removeFireTelegramRecipient(index) {
+            fireSubEdit = null;
             const recipients = fireTelegramRecipients.filter((_, recipientIndex) => recipientIndex !== index);
             try {
                 await persistFireTelegramSettings(fireTelegramEnabled, recipients);
@@ -5114,7 +5235,103 @@
 
         // Feuerwehr-Einsätze
         const FIRE_POLL_MS = 10000;
-        const fireClient = { data: null, seenIds: null, error: false };
+        const fireClient = { data: null, seenIds: null, error: false, districts: [], view: { district: '05', stations: [] }, requestId: 0 };
+
+        function loadFireView() {
+            try {
+                const saved = JSON.parse(localStorage.getItem(FIRE_VIEW_STORAGE_KEY) || 'null');
+                if (saved && /^\d{2,3}$/.test(saved.district || '')) {
+                    fireClient.view = { district: saved.district, stations: Array.isArray(saved.stations) ? saved.stations.map(String).slice(0, 300) : [] };
+                }
+            } catch (error) {}
+        }
+
+        function saveFireView() {
+            try { localStorage.setItem(FIRE_VIEW_STORAGE_KEY, JSON.stringify(fireClient.view)); } catch (error) {}
+        }
+
+        async function loadFireDistricts() {
+            try {
+                const response = await fetch('/api/fire/districts');
+                const result = await response.json();
+                if (!response.ok || !Array.isArray(result.districts)) throw new Error();
+                fireClient.districts = result.districts;
+                if (!fireClient.districts.some(district => district.code === fireClient.view.district)) fireClient.view = { district: result.defaultDistrict, stations: [] };
+            } catch (error) {}
+            renderFireControls();
+        }
+
+        function fireStationVisible(stationId) {
+            const selected = fireClient.view.stations;
+            return !selected.length || selected.includes(String(stationId));
+        }
+
+        function fireVisibleData(data) {
+            const active = data.active.filter(item => fireStationVisible(item.id));
+            return {
+                active,
+                alerted: (data.alerted || []).filter(item => fireStationVisible(item.id)),
+                history: data.history.filter(item => fireStationVisible(item.stationId))
+            };
+        }
+
+        function renderFireControls() {
+            const select = document.getElementById('fire-district-select');
+            if (!select) return;
+            select.innerHTML = fireClient.districts.map(district => `<option value="${escapeHtml(district.code)}" ${district.code === fireClient.view.district ? 'selected' : ''}>Bezirk ${escapeHtml(district.name)}</option>`).join('');
+            const count = fireClient.view.stations.length;
+            document.getElementById('fire-filter-toggle').textContent = count ? `${count} Feuerwehr${count === 1 ? '' : 'en'} gewählt` : 'Feuerwehren wählen';
+            renderFireFilterList();
+        }
+
+        function renderFireFilterList() {
+            const list = document.getElementById('fire-filter-list');
+            if (!list) return;
+            const term = (document.getElementById('fire-filter-search')?.value || '').trim().toLowerCase();
+            const stations = (fireClient.data?.districtCode === fireClient.view.district ? fireClient.data.stations : []) || [];
+            const visible = stations.filter(station => !term || station.name.toLowerCase().includes(term));
+            list.innerHTML = visible.length ? visible.map(station => `
+                <label class="flex min-h-9 items-center gap-2 rounded-lg px-2 text-xs text-slate-200 hover:bg-slate-900">
+                    <input type="checkbox" ${fireClient.view.stations.includes(station.id) ? 'checked' : ''} onchange="toggleFireStation('${escapeHtml(station.id)}')" class="h-4 w-4 rounded border-slate-700 bg-slate-900 text-amber-500">
+                    <span class="truncate">${escapeHtml(station.name)}</span>
+                </label>`).join('') : `<p class="text-[11px] text-slate-500">${stations.length ? 'Keine Treffer.' : 'Feuerwehren werden geladen …'}</p>`;
+        }
+
+        function toggleFireFilter() {
+            const panel = document.getElementById('fire-filter-panel');
+            const open = panel.classList.toggle('hidden') === false;
+            document.getElementById('fire-filter-toggle').setAttribute('aria-expanded', String(open));
+            if (open) renderFireFilterList();
+        }
+
+        function toggleFireStation(id) {
+            const stations = fireClient.view.stations;
+            fireClient.view.stations = stations.includes(id) ? stations.filter(item => item !== id) : [...stations, id];
+            saveFireView();
+            renderFireControls();
+            updateFireBadge();
+            renderFireTab();
+        }
+
+        function clearFireStations() {
+            fireClient.view.stations = [];
+            saveFireView();
+            renderFireControls();
+            updateFireBadge();
+            renderFireTab();
+        }
+
+        function setFireDistrict(code) {
+            if (code === fireClient.view.district) return;
+            fireClient.view = { district: code, stations: [] };
+            fireClient.data = null;
+            fireClient.seenIds = null;
+            saveFireView();
+            renderFireControls();
+            updateFireBadge();
+            renderFireTab();
+            fetchFireData(true);
+        }
 
         function fireTimeAgo(iso) {
             const minutes = Math.max(0, Math.round((Date.now() - new Date(iso).getTime()) / 60000));
@@ -5149,26 +5366,29 @@
                 history.innerHTML = '';
                 return;
             }
-            document.getElementById('fire-subtitle').textContent = `${data.district} · ${data.stationCount} Feuerwehren`;
+            const visible = fireVisibleData(data);
+            const filtered = fireClient.view.stations.length > 0;
+            document.getElementById('fire-subtitle').textContent = `${data.district} · ${filtered ? `${fireClient.view.stations.length} von ${data.stationCount}` : data.stationCount} Feuerwehren`;
             document.getElementById('fire-updated').textContent = `${data.stale ? 'Veraltet · ' : ''}Stand ${new Date(data.updatedAt).toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}`;
             summary.innerHTML = `
-                <div class="rounded-xl border ${data.activeCount ? 'border-red-500/50 bg-red-950/40' : 'border-emerald-500/30 bg-emerald-950/20'} p-3 text-center">
-                    <p class="text-3xl font-black ${data.activeCount ? 'text-red-300' : 'text-emerald-300'}">${data.activeCount}</p>
+                <div class="rounded-xl border ${visible.active.length ? 'border-red-500/50 bg-red-950/40' : 'border-emerald-500/30 bg-emerald-950/20'} p-3 text-center">
+                    <p class="text-3xl font-black ${visible.active.length ? 'text-red-300' : 'text-emerald-300'}">${visible.active.length}</p>
                     <p class="text-xs text-slate-300">Feuerwehren im Einsatz</p>
                 </div>
                 <div class="rounded-xl border border-slate-700 bg-slate-800/50 p-3 text-center">
                     <p class="text-3xl font-black text-slate-100">${data.incidentCount}</p>
                     <p class="text-xs text-slate-300">Einsätze im Bezirk</p>
                 </div>`;
-            const alerted = (data.alerted || []).map(item => fireCardHtml(item, 'orange')).join('');
-            active.innerHTML = (data.active.map(item => fireCardHtml(item, 'red')).join('') + alerted) || '<p class="text-sm text-slate-400">Aktuell ist keine Feuerwehr im Einsatz.</p>';
-            history.innerHTML = data.history.map(item => fireCardHtml(item, 'grey')).join('') || '<p class="text-sm text-slate-400">Seit dem Serverstart gab es keine neuen Ausrückungen.</p>';
+            const alerted = visible.alerted.map(item => fireCardHtml(item, 'orange')).join('');
+            active.innerHTML = (visible.active.map(item => fireCardHtml(item, 'red')).join('') + alerted) || '<p class="text-sm text-slate-400">Aktuell ist keine Feuerwehr im Einsatz.</p>';
+            history.innerHTML = visible.history.map(item => fireCardHtml(item, 'grey')).join('') || '<p class="text-sm text-slate-400">Seit dem Serverstart gab es keine neuen Ausrückungen.</p>';
         }
 
         function updateFireBadge() {
             const badge = document.getElementById('nav-fire-badge');
             if (!badge) return;
-            const count = fireClient.data?.activeCount || 0;
+            const visibleActive = fireClient.data ? fireVisibleData(fireClient.data).active : [];
+            const count = visibleActive.length;
             badge.textContent = count;
             badge.classList.toggle('hidden', !count);
             const button = document.getElementById('header-fire-btn');
@@ -5177,7 +5397,7 @@
             const stale = Boolean(fireClient.data?.stale) || fireClient.error;
             button.className = `flex items-center gap-2 px-2.5 py-1.5 rounded-xl border text-xs font-semibold transition-colors ${count ? 'border-red-400/70 bg-red-700/40 text-red-100 animate-pulse' : 'border-indigo-500/30 bg-slate-900/80 text-slate-200 hover:border-red-400/60'}`;
             document.getElementById('header-fire-icon').className = `fa-solid fa-fire-flame-curved ${count ? 'text-red-300' : unknown || stale ? 'text-slate-500' : 'text-emerald-400'}`;
-            const names = (fireClient.data?.active || []).map(item => item.name).join(', ');
+            const names = visibleActive.map(item => item.name).join(', ');
             document.getElementById('header-fire-text').textContent = unknown ? 'FF –' : count ? `${count} im Einsatz` : 'Kein Einsatz';
             button.title = count ? `Im Einsatz: ${names}` : stale ? 'Feuerwehr-Daten evtl. veraltet' : 'Feuerwehr-Einsätze';
         }
@@ -5203,25 +5423,32 @@
             setTimeout(() => popup.remove(), 20000);
         }
 
-        async function fetchFireData() {
-            if (document.hidden) return;
+        async function fetchFireData(force = false) {
+            if (document.hidden && !force) return;
+            const district = fireClient.view.district;
+            const requestId = ++fireClient.requestId;
             try {
-                const response = await fetch('/api/fire', { cache: 'no-store' });
+                const response = await fetch(`/api/fire?district=${encodeURIComponent(district)}`, { cache: 'no-store' });
                 if (!response.ok) throw new Error(`HTTP ${response.status}`);
                 const data = await response.json();
+                if (requestId !== fireClient.requestId || district !== fireClient.view.district) return;
                 const ids = new Set(data.history.map(item => item.id));
-                if (fireClient.seenIds) data.history.filter(item => !fireClient.seenIds.has(item.id)).reverse().forEach(showFireAlertPopup);
+                if (fireClient.seenIds) data.history.filter(item => !fireClient.seenIds.has(item.id) && fireStationVisible(item.stationId)).reverse().forEach(showFireAlertPopup);
                 fireClient.seenIds = ids;
                 fireClient.data = data;
                 fireClient.error = false;
             } catch (error) {
+                if (requestId !== fireClient.requestId) return;
                 fireClient.error = true;
             }
             updateFireBadge();
+            if (!document.getElementById('fire-filter-panel')?.classList.contains('hidden') && !document.activeElement?.closest?.('#fire-filter-panel')) renderFireFilterList();
             if (state.currentTab === 'fire') renderFireTab();
         }
 
         function startFireUpdates() {
+            loadFireView();
+            loadFireDistricts();
             fetchFireData();
             setInterval(fetchFireData, FIRE_POLL_MS);
             document.addEventListener('visibilitychange', () => { if (!document.hidden) fetchFireData(); });
@@ -5747,7 +5974,7 @@
         }
 
         // Geräte-Sync: gemeinsame Daten werden über den Server auf alle Geräte verteilt
-        const SYNC_KEYS = [MEMBER_STORAGE_KEY, BIRTHDAY_STORAGE_KEY, EVENTS_STORAGE_KEY, FOOTBALL_TEAMS_STORAGE_KEY, CUSTOM_TABS_STORAGE_KEY, TASKS_STORAGE_KEY, HABITS_STORAGE_KEY, POINTS_STORAGE_KEY, SHOPPING_STORAGE_KEY];
+        const SYNC_KEYS = [MEMBER_STORAGE_KEY, BIRTHDAY_STORAGE_KEY, EVENTS_STORAGE_KEY, FOOTBALL_TEAMS_STORAGE_KEY, CUSTOM_TABS_STORAGE_KEY, TASKS_STORAGE_KEY, HABITS_STORAGE_KEY, POINTS_STORAGE_KEY, SHOPPING_STORAGE_KEY, FIRE_VIEW_STORAGE_KEY];
         const SYNC_PENDING_KEY = 'familien-dashboard-sync-pending';
         const SYNC_JOINED_KEY = 'familien-dashboard-sync-joined';
         const nativeStorageSetItem = Storage.prototype.setItem;
@@ -5826,6 +6053,7 @@
             if (changed(EVENTS_STORAGE_KEY)) run(loadSavedCalendarEvents);
             if (changed(TASKS_STORAGE_KEY) || changed(HABITS_STORAGE_KEY) || changed(SHOPPING_STORAGE_KEY)) run(loadOrganizerData);
             if (changed(SHOPPING_STORAGE_KEY)) run(renderShoppingList);
+            if (changed(FIRE_VIEW_STORAGE_KEY)) run(() => { loadFireView(); fetchFireData(true); });
             if (changed(POINTS_STORAGE_KEY)) run(loadPointSettings);
             if (changed(CUSTOM_TABS_STORAGE_KEY)) run(loadCustomTabs);
             if (changed(FOOTBALL_TEAMS_STORAGE_KEY)) run(applyFootballSelectionFromStorage);

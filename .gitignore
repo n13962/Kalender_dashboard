@@ -10,3 +10,5 @@ todos.json
 .cameras.json
 camera-events/
 .sync-data.json
+.fire-telegram-*.json
+.shelly-devices.json

@@ -554,15 +554,39 @@ app.get('/api/network-name', async (req, res) => {
     res.set('Cache-Control', 'no-store').json({ name: networkNameCache.name, ip: addresses[0]?.address || '' });
 });
 
-// Feuerwehr-Einsätze (Bezirk Gmünd) aus dem öffentlichen NÖ-Wastl-Feed der FF Krems
-const FIRE_DISTRICT = '05';
-const FIRE_FEED_URL = `https://www.feuerwehr-krems.at/CodePages/Wastl/GetDaten/GetWastlBezirkS3.asp?bezirk=${FIRE_DISTRICT}`;
+// Feuerwehr-Einsätze (Niederösterreich) aus dem öffentlichen NÖ-Wastl-Feed der FF Krems
+const FIRE_DEFAULT_DISTRICT = '05';
+const FIRE_DISTRICTS = [
+    ['01', 'Amstetten'], ['02', 'Baden'], ['03', 'Bruck an der Leitha'], ['04', 'Gänserndorf'], ['05', 'Gmünd'],
+    ['061', 'Klosterneuburg'], ['062', 'Purkersdorf'], ['063', 'Schwechat'], ['07', 'Hollabrunn'], ['08', 'Horn'],
+    ['09', 'Stockerau'], ['10', 'Krems/Donau'], ['11', 'Lilienfeld'], ['12', 'Melk'], ['13', 'Mistelbach'],
+    ['14', 'Mödling'], ['15', 'Neunkirchen'], ['17', 'St. Pölten'], ['18', 'Scheibbs'], ['19', 'Tulln'],
+    ['20', 'Waidhofen/Thaya'], ['21', 'Wiener Neustadt'], ['22', 'Zwettl']
+].map(([code, name]) => ({ code, name }));
+const FIRE_DISTRICT_CODES = new Set(FIRE_DISTRICTS.map(district => district.code));
+const FIRE_FEED_URL = 'https://www.feuerwehr-krems.at/CodePages/Wastl/GetDaten/GetWastlBezirkS3.asp?bezirk=';
 const FIRE_POLL_MS = 15000;
+const FIRE_VIEW_KEEP_MS = 10 * 60 * 1000;
 const FIRE_MAX_HISTORY = 50;
-const fireState = { stations: new Map(), baseline: false, history: [], summary: null, updatedAt: null, error: null, lastFetch: 0, pending: null };
+const fireStates = new Map();
+const fireViewedAt = new Map();
 const fireTelegramPending = new Map();
 let fireTelegramEnabled = true;
-let fireTelegramRecipients = TELEGRAM_CHAT_ID ? [{ name: 'Christoph Meisel', chatId: TELEGRAM_CHAT_ID }] : [];
+let fireTelegramRecipients = TELEGRAM_CHAT_ID ? [{ name: 'Christoph Meisel', chatId: TELEGRAM_CHAT_ID, subscriptions: [{ district: FIRE_DEFAULT_DISTRICT, stations: [] }] }] : [];
+
+function fireDistrictName(code) {
+    return FIRE_DISTRICTS.find(district => district.code === code)?.name || code;
+}
+
+function getFireState(code) {
+    if (!fireStates.has(code)) fireStates.set(code, { stations: new Map(), baseline: false, history: [], summary: null, updatedAt: null, error: null, lastFetch: 0, pending: null });
+    return fireStates.get(code);
+}
+
+function parseFireDistrict(value) {
+    if (value === undefined || value === '') return FIRE_DEFAULT_DISTRICT;
+    return typeof value === 'string' && FIRE_DISTRICT_CODES.has(value) ? value : null;
+}
 
 function loadFireTelegramSettings() {
     if (!fs.existsSync(FIRE_TELEGRAM_SETTINGS_FILE)) return;
@@ -577,17 +601,39 @@ function loadFireTelegramSettings() {
 
 loadFireTelegramSettings();
 
+function validateFireSubscriptions(subscriptions, name) {
+    if (subscriptions === undefined) return [{ district: FIRE_DEFAULT_DISTRICT, stations: [] }];
+    if (!Array.isArray(subscriptions) || subscriptions.length > FIRE_DISTRICTS.length) throw new Error(`Die Bezirksauswahl für ${name} ist ungültig.`);
+    const seen = new Set();
+    return subscriptions.map(subscription => {
+        const district = subscription?.district;
+        if (!FIRE_DISTRICT_CODES.has(district) || seen.has(district)) throw new Error(`Die Bezirksauswahl für ${name} ist ungültig.`);
+        seen.add(district);
+        const stations = subscription.stations ?? [];
+        if (!Array.isArray(stations) || stations.length > 300 || stations.some(id => typeof id !== 'string' || !/^[\w-]{1,20}$/.test(id))) {
+            throw new Error(`Die Feuerwehr-Auswahl für ${name} ist ungültig.`);
+        }
+        return { district, stations: [...new Set(stations)] };
+    });
+}
+
+function fireTelegramDistricts() {
+    if (!fireTelegramEnabled || !TELEGRAM_BOT_TOKEN) return [];
+    return [...new Set(fireTelegramRecipients.flatMap(recipient => recipient.subscriptions.map(subscription => subscription.district)))];
+}
+
 function validateFireTelegramRecipients(recipients) {
     if (!Array.isArray(recipients) || recipients.length > 50) throw new Error('Bitte höchstens 50 Telegram-Empfänger angeben.');
     const seenChatIds = new Set();
     return recipients.map(recipient => {
         const name = typeof recipient?.name === 'string' ? recipient.name.trim() : '';
         const chatId = typeof recipient?.chatId === 'string' ? recipient.chatId.trim() : '';
+        const subscriptions = validateFireSubscriptions(recipient?.subscriptions, name);
         if (!name || name.length > 80) throw new Error('Jeder Empfänger benötigt einen Namen mit höchstens 80 Zeichen.');
         if (!/^-?\d{1,20}$/.test(chatId)) throw new Error(`Die Telegram-ID für ${name} ist ungültig.`);
         if (seenChatIds.has(chatId)) throw new Error('Eine Telegram-ID darf nur einmal eingetragen werden.');
         seenChatIds.add(chatId);
-        return { name, chatId };
+        return { name, chatId, subscriptions };
     });
 }
 
@@ -614,19 +660,22 @@ async function sendTelegramMessage(text, recipient) {
     if (!response.ok || !result.ok) throw new Error(result.description || `Telegram-Anfrage fehlgeschlagen (HTTP ${response.status}).`);
 }
 
-async function sendFireTelegramAlert(station, startedAt, status) {
-    if (!fireTelegramEnabled || !TELEGRAM_BOT_TOKEN || !fireTelegramRecipients.length) return;
-    const alertId = `${station.id}:${status}`;
+async function sendFireTelegramAlert(district, summary, station, startedAt, status) {
+    if (!fireTelegramEnabled || !TELEGRAM_BOT_TOKEN) return;
+    const recipients = fireTelegramRecipients.filter(recipient => recipient.subscriptions.some(subscription =>
+        subscription.district === district && (!subscription.stations.length || subscription.stations.includes(station.id))));
+    if (!recipients.length) return;
+    const alertId = `${district}:${station.id}:${status}`;
     if (fireTelegramPending.has(alertId)) return;
+    const districtName = summary?.name || fireDistrictName(district);
 
-    const recipients = fireTelegramRecipients;
     const pending = (async () => {
         try {
             const details = station.info.length ? `\n${station.info.join('\n')}` : '';
             const message = [
                 status === 'orange'
-                    ? `⚠️ Feuerwehr alarmiert im Bezirk ${fireState.summary?.name || 'Gmünd'}`
-                    : `🚒 Feuerwehreinsatz im Bezirk ${fireState.summary?.name || 'Gmünd'}`,
+                    ? `⚠️ Feuerwehr alarmiert im Bezirk ${districtName}`
+                    : `🚒 Feuerwehreinsatz im Bezirk ${districtName}`,
                 `Feuerwehr: ${station.name}`,
                 `Zeitpunkt: ${new Date(startedAt).toLocaleString('de-AT')}${details}`
             ].join('\n');
@@ -653,7 +702,7 @@ function xmlValue(block, tag) {
     return match ? (match[1] ?? match[2] ?? '') : '';
 }
 
-function parseFireFeed(xml) {
+function parseFireFeed(xml, district) {
     const stations = [...xml.matchAll(/<aFFNr[^>]*>([\s\S]*?)<\/aFFNr>/g)].map(match => {
         const block = match[1];
         const button = xmlValue(block, 'Button').toLowerCase();
@@ -667,7 +716,7 @@ function parseFireFeed(xml) {
             info: status === 'green' ? [] : lines.slice(1)
         };
     }).filter(station => station.id);
-    const bazBlock = [...xml.matchAll(/<aBAZID[^>]*>([\s\S]*?)<\/aBAZID>/g)].map(match => match[1]).find(block => xmlValue(block, 'cBezirk').trim() === FIRE_DISTRICT);
+    const bazBlock = [...xml.matchAll(/<aBAZID[^>]*>([\s\S]*?)<\/aBAZID>/g)].map(match => match[1]).find(block => xmlValue(block, 'cBezirk').trim() === district);
     const summary = bazBlock ? {
         name: xmlValue(bazBlock, 'cFriendlyName').trim(),
         stationCount: Number.parseInt(xmlValue(bazBlock, 'CountFeuerwehr'), 10) || 0,
@@ -677,10 +726,11 @@ function parseFireFeed(xml) {
     return { stations, summary };
 }
 
-async function refreshFireData() {
-    const response = await fetch(FIRE_FEED_URL, { headers: { 'User-Agent': 'Mozilla/5.0 Familien-Dashboard' }, signal: AbortSignal.timeout(10000) });
+async function refreshFireData(district) {
+    const fireState = getFireState(district);
+    const response = await fetch(`${FIRE_FEED_URL}${district}`, { headers: { 'User-Agent': 'Mozilla/5.0 Familien-Dashboard' }, signal: AbortSignal.timeout(10000) });
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    const { stations, summary } = parseFireFeed(await response.text());
+    const { stations, summary } = parseFireFeed(await response.text(), district);
     if (!stations.length) throw new Error('Keine Feuerwehr-Daten gefunden.');
     const now = new Date().toISOString();
     const next = new Map();
@@ -689,9 +739,9 @@ async function refreshFireData() {
         const startedAt = station.status === 'red' ? (previous?.status === 'red' ? previous.startedAt : now) : null;
         next.set(station.id, { ...station, startedAt });
         if (fireState.baseline && previous && previous.status !== station.status && ['red', 'orange'].includes(station.status)) {
-            fireState.history.unshift({ id: `${station.id}-${Date.now()}`, stationId: station.id, name: station.name, info: station.info, startedAt: now, status: station.status });
+            fireState.history.unshift({ id: `${district}-${station.id}-${Date.now()}`, stationId: station.id, name: station.name, info: station.info, startedAt: now, status: station.status });
             fireState.history.length = Math.min(fireState.history.length, FIRE_MAX_HISTORY);
-            void sendFireTelegramAlert(station, now, station.status);
+            void sendFireTelegramAlert(district, summary, station, now, station.status);
         }
     }
     fireState.stations = next;
@@ -701,28 +751,49 @@ async function refreshFireData() {
     fireState.error = null;
 }
 
-function ensureFireData() {
+function ensureFireData(district) {
+    const fireState = getFireState(district);
     if (fireState.pending) return fireState.pending;
     if (Date.now() - fireState.lastFetch < 5000) return Promise.resolve();
     fireState.lastFetch = Date.now();
-    fireState.pending = refreshFireData()
+    fireState.pending = refreshFireData(district)
         .catch(error => { fireState.error = error.message; })
         .finally(() => { fireState.pending = null; });
     return fireState.pending;
 }
 
-setInterval(ensureFireData, FIRE_POLL_MS).unref();
-ensureFireData();
+function pollFireDistricts() {
+    const now = Date.now();
+    const watched = new Set(fireTelegramDistricts());
+    for (const [district, viewedAt] of fireViewedAt) {
+        if (now - viewedAt < FIRE_VIEW_KEEP_MS) watched.add(district);
+        else fireViewedAt.delete(district);
+    }
+    for (const district of watched) void ensureFireData(district);
+}
+
+setInterval(pollFireDistricts, FIRE_POLL_MS).unref();
+pollFireDistricts();
+
+app.get('/api/fire/districts', (req, res) => {
+    res.json({ defaultDistrict: FIRE_DEFAULT_DISTRICT, districts: FIRE_DISTRICTS });
+});
 
 app.get('/api/fire', async (req, res) => {
-    await ensureFireData();
+    const district = parseFireDistrict(req.query.district);
+    if (!district) return res.status(400).json({ error: 'Unbekannter Bezirk.' });
+    fireViewedAt.set(district, Date.now());
+    await ensureFireData(district);
+    const fireState = getFireState(district);
     if (!fireState.updatedAt) return res.status(502).json({ error: 'Feuerwehr-Daten sind gerade nicht erreichbar.' });
     const stations = [...fireState.stations.values()];
     const active = stations.filter(station => station.status === 'red').map(({ id, name, info, startedAt }) => ({ id, name, info, startedAt }));
     const alerted = stations.filter(station => station.status === 'orange').map(({ id, name, info }) => ({ id, name, info }));
     res.set('Cache-Control', 'no-store').json({
-        district: fireState.summary?.name || 'BAZ Gmünd',
+        districtCode: district,
+        district: fireState.summary?.name || `BAZ ${fireDistrictName(district)}`,
         stationCount: stations.length,
+        stations: stations.map(({ id, name }) => ({ id, name })).sort((a, b) => a.name.localeCompare(b.name, 'de')),
         activeCount: active.length,
         active,
         alerted,
@@ -753,6 +824,7 @@ app.put('/api/fire/telegram-settings', (req, res) => {
         saveFireTelegramSettings(req.body.enabled, recipients);
         fireTelegramEnabled = req.body.enabled;
         fireTelegramRecipients = recipients;
+        pollFireDistricts();
         res.json({
             enabled: fireTelegramEnabled,
             recipients: fireTelegramRecipients,
@@ -1653,7 +1725,8 @@ const SYNC_KEYS = new Set([
     'familien-dashboard-tasks',
     'familien-dashboard-habits',
     'familien-dashboard-points',
-    'familien-dashboard-shopping'
+    'familien-dashboard-shopping',
+    'familien-dashboard-fire-view'
 ]);
 const MAX_SYNC_VALUE_LENGTH = 1500000;
 
