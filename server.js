@@ -16,6 +16,9 @@ const DASHBOARD_USER = process.env.DASHBOARD_USER || '';
 const DASHBOARD_PASSWORD = process.env.DASHBOARD_PASSWORD || '';
 const HOME_ASSISTANT_URL = process.env.HOME_ASSISTANT_URL || '';
 const HOME_ASSISTANT_TOKEN = process.env.HOME_ASSISTANT_TOKEN || '';
+const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || '';
+const TELEGRAM_CHAT_ID = (process.env.TELEGRAM_CHAT_ID || '').trim();
+if (TELEGRAM_CHAT_ID && !TELEGRAM_BOT_TOKEN) console.error('Telegram-Feuerwehrbenachrichtigungen benötigen TELEGRAM_BOT_TOKEN.');
 const AUTH_SESSION_COOKIE = 'familien_dashboard_session';
 const AUTH_SESSION_DURATION_MS = 12 * 60 * 60 * 1000;
 const ORF_NOE_RSS_URL = 'https://rss.orf.at/noe.xml';
@@ -54,6 +57,7 @@ const CALENDAR_CONFIG_FILE = path.join(DATA_DIR, '.calendar-source.json');
 const HOME_ASSISTANT_SELECTION_FILE = path.join(DATA_DIR, '.home-assistant-selection.json');
 const HOME_ASSISTANT_WEATHER_FILE = path.join(DATA_DIR, '.home-assistant-weather.json');
 const SHELLY_DEVICES_FILE = path.join(DATA_DIR, '.shelly-devices.json');
+const FIRE_TELEGRAM_SETTINGS_FILE = path.join(DATA_DIR, '.fire-telegram-settings.json');
 const AUSTRIAN_HOLIDAYS_URL = 'https://calendar.google.com/calendar/ical/de.austrian%23holiday%40group.v.calendar.google.com/public/basic.ics';
 const CALENDAR_SOURCE_COLORS = ['amber', 'emerald', 'rose', 'blue', 'violet', 'cyan', 'orange', 'lime', 'pink', 'teal'];
 const HOME_ASSISTANT_DOMAINS = ['light', 'switch', 'cover', 'fan', 'climate'];
@@ -556,6 +560,93 @@ const FIRE_FEED_URL = `https://www.feuerwehr-krems.at/CodePages/Wastl/GetDaten/G
 const FIRE_POLL_MS = 15000;
 const FIRE_MAX_HISTORY = 50;
 const fireState = { stations: new Map(), baseline: false, history: [], summary: null, updatedAt: null, error: null, lastFetch: 0, pending: null };
+const fireTelegramPending = new Map();
+let fireTelegramEnabled = true;
+let fireTelegramRecipients = TELEGRAM_CHAT_ID ? [{ name: 'Christoph Meisel', chatId: TELEGRAM_CHAT_ID }] : [];
+
+function loadFireTelegramSettings() {
+    if (!fs.existsSync(FIRE_TELEGRAM_SETTINGS_FILE)) return;
+    try {
+        const saved = JSON.parse(fs.readFileSync(FIRE_TELEGRAM_SETTINGS_FILE, 'utf8'));
+        if (typeof saved.enabled === 'boolean') fireTelegramEnabled = saved.enabled;
+        if (Array.isArray(saved.recipients)) fireTelegramRecipients = validateFireTelegramRecipients(saved.recipients);
+    } catch (error) {
+        console.error('Telegram-Einstellungen für Feuerwehreinsätze konnten nicht geladen werden:', error.message);
+    }
+}
+
+loadFireTelegramSettings();
+
+function validateFireTelegramRecipients(recipients) {
+    if (!Array.isArray(recipients) || recipients.length > 50) throw new Error('Bitte höchstens 50 Telegram-Empfänger angeben.');
+    const seenChatIds = new Set();
+    return recipients.map(recipient => {
+        const name = typeof recipient?.name === 'string' ? recipient.name.trim() : '';
+        const chatId = typeof recipient?.chatId === 'string' ? recipient.chatId.trim() : '';
+        if (!name || name.length > 80) throw new Error('Jeder Empfänger benötigt einen Namen mit höchstens 80 Zeichen.');
+        if (!/^-?\d{1,20}$/.test(chatId)) throw new Error(`Die Telegram-ID für ${name} ist ungültig.`);
+        if (seenChatIds.has(chatId)) throw new Error('Eine Telegram-ID darf nur einmal eingetragen werden.');
+        seenChatIds.add(chatId);
+        return { name, chatId };
+    });
+}
+
+function saveFireTelegramSettings(enabled, recipients) {
+    const temporaryFile = `${FIRE_TELEGRAM_SETTINGS_FILE}.tmp`;
+    fs.writeFileSync(temporaryFile, JSON.stringify({ enabled, recipients }), { encoding: 'utf8', mode: 0o600 });
+    fs.renameSync(temporaryFile, FIRE_TELEGRAM_SETTINGS_FILE);
+}
+
+async function sendTelegramMessage(text, recipient) {
+    if (!TELEGRAM_BOT_TOKEN) throw new Error('Telegram ist nicht vollständig konfiguriert. Der Bot-Token muss in .env gesetzt sein.');
+    const response = await fetch(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ chat_id: recipient.chatId, text }),
+        signal: AbortSignal.timeout(10000)
+    });
+    let result;
+    try {
+        result = await response.json();
+    } catch {
+        throw new Error(`Telegram hat eine ungültige Antwort zurückgegeben (HTTP ${response.status}).`);
+    }
+    if (!response.ok || !result.ok) throw new Error(result.description || `Telegram-Anfrage fehlgeschlagen (HTTP ${response.status}).`);
+}
+
+async function sendFireTelegramAlert(station, startedAt, status) {
+    if (!fireTelegramEnabled || !TELEGRAM_BOT_TOKEN || !fireTelegramRecipients.length) return;
+    const alertId = `${station.id}:${status}`;
+    if (fireTelegramPending.has(alertId)) return;
+
+    const recipients = fireTelegramRecipients;
+    const pending = (async () => {
+        try {
+            const details = station.info.length ? `\n${station.info.join('\n')}` : '';
+            const message = [
+                status === 'orange'
+                    ? `⚠️ Feuerwehr alarmiert im Bezirk ${fireState.summary?.name || 'Gmünd'}`
+                    : `🚒 Feuerwehreinsatz im Bezirk ${fireState.summary?.name || 'Gmünd'}`,
+                `Feuerwehr: ${station.name}`,
+                `Zeitpunkt: ${new Date(startedAt).toLocaleString('de-AT')}${details}`
+            ].join('\n');
+            const results = await Promise.allSettled(recipients.map(recipient => sendTelegramMessage(message, recipient)));
+            results.forEach((result, index) => {
+                if (result.status === 'rejected') {
+                    const error = result.reason instanceof Error ? result.reason.message.split(TELEGRAM_BOT_TOKEN).join('[redacted]') : 'Unbekannter Fehler';
+                    console.error(`Telegram-Benachrichtigung für ${recipients[index].name} fehlgeschlagen:`, error);
+                }
+            });
+        } catch (error) {
+            const message = error instanceof Error ? error.message.split(TELEGRAM_BOT_TOKEN).join('[redacted]') : 'Unbekannter Fehler';
+            console.error(`Telegram-Benachrichtigung für ${station.name} fehlgeschlagen:`, message);
+        }
+    })();
+
+    fireTelegramPending.set(alertId, pending);
+    await pending;
+    fireTelegramPending.delete(alertId);
+}
 
 function xmlValue(block, tag) {
     const match = block.match(new RegExp(`<${tag}>\\s*(?:<!\\[CDATA\\[([\\s\\S]*?)\\]\\]>|([\\s\\S]*?))\\s*</${tag}>`));
@@ -597,9 +688,10 @@ async function refreshFireData() {
         const previous = fireState.stations.get(station.id);
         const startedAt = station.status === 'red' ? (previous?.status === 'red' ? previous.startedAt : now) : null;
         next.set(station.id, { ...station, startedAt });
-        if (fireState.baseline && station.status === 'red' && previous && previous.status !== 'red') {
-            fireState.history.unshift({ id: `${station.id}-${Date.now()}`, stationId: station.id, name: station.name, info: station.info, startedAt: now });
+        if (fireState.baseline && previous && previous.status !== station.status && ['red', 'orange'].includes(station.status)) {
+            fireState.history.unshift({ id: `${station.id}-${Date.now()}`, stationId: station.id, name: station.name, info: station.info, startedAt: now, status: station.status });
             fireState.history.length = Math.min(fireState.history.length, FIRE_MAX_HISTORY);
+            void sendFireTelegramAlert(station, now, station.status);
         }
     }
     fireState.stations = next;
@@ -639,6 +731,51 @@ app.get('/api/fire', async (req, res) => {
         updatedAt: fireState.updatedAt,
         stale: Boolean(fireState.error)
     });
+});
+
+app.get('/api/fire/telegram-settings', (req, res) => {
+    res.set('Cache-Control', 'no-store').json({
+        enabled: fireTelegramEnabled,
+        configured: Boolean(TELEGRAM_BOT_TOKEN && fireTelegramRecipients.length),
+        recipients: fireTelegramRecipients
+    });
+});
+
+app.put('/api/fire/telegram-settings', (req, res) => {
+    if (typeof req.body?.enabled !== 'boolean') return res.status(400).json({ error: 'Bitte einen gültigen Ein/Aus-Status angeben.' });
+    let recipients;
+    try {
+        recipients = validateFireTelegramRecipients(req.body.recipients ?? fireTelegramRecipients);
+    } catch (error) {
+        return res.status(400).json({ error: error.message });
+    }
+    try {
+        saveFireTelegramSettings(req.body.enabled, recipients);
+        fireTelegramEnabled = req.body.enabled;
+        fireTelegramRecipients = recipients;
+        res.json({
+            enabled: fireTelegramEnabled,
+            recipients: fireTelegramRecipients,
+            configured: Boolean(TELEGRAM_BOT_TOKEN && fireTelegramRecipients.length)
+        });
+    } catch (error) {
+        console.error('Telegram-Einstellung konnte nicht gespeichert werden:', error.message);
+        res.status(500).json({ error: 'Die Einstellung konnte nicht gespeichert werden.' });
+    }
+});
+
+app.post('/api/fire/telegram-test', async (req, res) => {
+    if (!TELEGRAM_BOT_TOKEN || !fireTelegramRecipients.length) {
+        return res.status(400).json({ error: 'Bitte Bot-Token und mindestens einen Empfänger in den Einstellungen konfigurieren.' });
+    }
+    const message = '✅ Testnachricht vom Familien-Dashboard: Telegram-Benachrichtigungen funktionieren.';
+    const requestedChatId = typeof req.body?.chatId === 'string' ? req.body.chatId.trim() : '';
+    const targets = requestedChatId ? fireTelegramRecipients.filter(recipient => recipient.chatId === requestedChatId) : fireTelegramRecipients;
+    if (!targets.length) return res.status(404).json({ error: 'Empfänger nicht gefunden.' });
+    const results = await Promise.allSettled(targets.map(recipient => sendTelegramMessage(message, recipient)));
+    const failed = results.flatMap((result, index) => result.status === 'rejected' ? [targets[index].name] : []);
+    if (failed.length) return res.status(502).json({ error: `Testnachricht fehlgeschlagen für: ${failed.join(', ')}.` });
+    res.json({ success: true });
 });
 
 app.get('/api/local-updates', async (req, res) => {
