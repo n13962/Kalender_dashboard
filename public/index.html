@@ -1377,6 +1377,10 @@
                     </div>
                     <div id="news-breaking"></div>
                     <div id="news-scopes" class="flex gap-2 overflow-x-auto pb-1" role="tablist" aria-label="News-Bereich"></div>
+                    <div id="news-archive-tools" class="hidden flex flex-wrap items-center gap-2">
+                        <input id="news-search" type="search" placeholder="Im Archiv suchen …" oninput="newsState.search = this.value; renderNewsTab()" class="min-h-10 min-w-0 flex-1 rounded-xl border border-indigo-500/20 bg-slate-950 px-3 text-xs text-slate-100 placeholder:text-slate-500">
+                        <label class="flex min-h-10 items-center gap-2 rounded-xl border border-indigo-500/20 bg-slate-950 px-3 text-xs text-slate-300"><input type="checkbox" onchange="newsState.archiveOnlyFavorite = this.checked; renderNewsTab()"> nur Gmünd</label>
+                    </div>
                     <div id="news-list" class="space-y-2" aria-live="polite"></div>
                     <p id="news-sources" class="text-[10px] text-slate-500"></p>
                 </div>
@@ -6022,12 +6026,13 @@
             if (frame) frame.src = WEATHER_STATION_URL;
         }
 
-        const newsState = { data: null, scope: 'gmuend', loading: false, error: '', fetchedAt: 0 };
+        const newsState = { data: null, scope: 'gmuend', search: '', archiveOnlyFavorite: false, loading: false, error: '', fetchedAt: 0 };
         const NEWS_SCOPES = [
             { key: 'gmuend', label: '★ Gmünd' },
             { key: 'region', label: 'Niederösterreich' },
             { key: 'austria', label: 'Österreich' },
-            { key: 'world', label: 'Welt' }
+            { key: 'world', label: 'Welt' },
+            { key: 'archive', label: '🗄 Archiv' }
         ];
 
         function newsTimeLabel(iso) {
@@ -6068,8 +6073,15 @@
             breaking.innerHTML = data.breaking.length ? `<div class="rounded-xl border border-red-500/50 bg-red-950/40 p-3">
                 <h3 class="mb-2 flex items-center gap-2 text-xs font-bold uppercase tracking-wide text-red-300"><i class="fa-solid fa-triangle-exclamation"></i> Eilmeldungen</h3>
                 <div class="space-y-2">${data.breaking.map(item => `<a href="${escapeHtml(item.url)}" target="_blank" rel="noopener noreferrer" class="block rounded-lg bg-slate-950/70 px-3 py-2 hover:bg-slate-900"><div class="text-[10px] text-red-200/80">${item.level === 'eil' ? '<b>EILMELDUNG</b> · ' : ''}${escapeHtml(item.source)} · ${escapeHtml(newsTimeLabel(item.publishedAt))}</div><p class="text-sm font-semibold text-slate-100">${escapeHtml(item.title)}</p></a>`).join('')}</div></div>` : '';
-            const items = data[newsState.scope] || [];
-            list.innerHTML = items.length ? items.map(newsItemHtml).join('') : '<p class="rounded-xl border border-indigo-500/15 bg-slate-950/60 px-4 py-6 text-center text-xs text-slate-400">Keine aktuellen Meldungen.</p>';
+            let items = data[newsState.scope] || [];
+            const tools = document.getElementById('news-archive-tools');
+            tools.classList.toggle('hidden', newsState.scope !== 'archive');
+            if (newsState.scope === 'archive') {
+                const term = newsState.search.trim().toLowerCase();
+                if (newsState.archiveOnlyFavorite) items = items.filter(item => item.favorite);
+                if (term) items = items.filter(item => `${item.title} ${item.description} ${item.source}`.toLowerCase().includes(term));
+            }
+            list.innerHTML = items.length ? items.map(newsItemHtml).join('') : `<p class="rounded-xl border border-indigo-500/15 bg-slate-950/60 px-4 py-6 text-center text-xs text-slate-400">${newsState.scope === 'archive' ? 'Das Archiv ist noch leer. Meldungen landen hier, sobald sie älter als 2 Tage sind.' : 'Keine aktuellen Meldungen.'}</p>`;
             document.getElementById('news-sources').textContent = 'Quellen: ' + data.sources.map(source => `${source.name}${source.ok ? '' : ' (nicht erreichbar)'}`).join(' · ');
         }
 

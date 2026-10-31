@@ -505,6 +505,28 @@ const NEWS_SOURCES = [
     { id: 'aljazeera', name: 'Al Jazeera', url: 'https://www.aljazeera.com/xml/rss/all.xml', scope: 'world', hosts: ['aljazeera.com'], lang: 'en' }
 ];
 const NEWS_CACHE_MS = 3 * 60 * 1000;
+const NEWS_MAX_AGE_MS = 2 * 24 * 3600 * 1000;
+const NEWS_ARCHIVE_KEEP_MS = 90 * 24 * 3600 * 1000;
+const NEWS_ARCHIVE_MAX = 3000;
+const NEWS_ARCHIVE_FILE = path.join(__dirname, '.news-archive.json');
+let newsArchive = new Map();
+try {
+    for (const item of JSON.parse(fs.readFileSync(NEWS_ARCHIVE_FILE, 'utf8'))) {
+        if (item && item.url && item.title) newsArchive.set(item.url, item);
+    }
+} catch (error) {}
+
+function saveNewsArchive() {
+    const cutoff = Date.now() - NEWS_ARCHIVE_KEEP_MS;
+    const items = [...newsArchive.values()]
+        .filter(item => (Date.parse(item.publishedAt) || 0) >= cutoff)
+        .sort((a, b) => (Date.parse(b.publishedAt) || 0) - (Date.parse(a.publishedAt) || 0))
+        .slice(0, NEWS_ARCHIVE_MAX);
+    newsArchive = new Map(items.map(item => [item.url, item]));
+    fs.writeFile(NEWS_ARCHIVE_FILE, JSON.stringify(items), error => {
+        if (error) console.error('News-Archiv konnte nicht gespeichert werden:', error.message);
+    });
+}
 const newsCache = new Map();
 let newsInFlight = null;
 
@@ -567,12 +589,28 @@ async function loadNews() {
     const lists = await Promise.all(NEWS_SOURCES.map(fetchNewsSource));
     const all = lists.flat().sort((a, b) => (Date.parse(b.publishedAt) || 0) - (Date.parse(a.publishedAt) || 0));
     const seen = new Set();
-    const unique = all.filter(item => {
+    let unique = all.filter(item => {
         const key = item.url.replace(/[?#].*$/, '');
         if (seen.has(key)) return false;
         seen.add(key);
         return true;
     });
+    const isGmuendItem = item => item.scope === 'gmuend' || ((item.scope === 'region' || item.scope === 'austria') && isGmuendDistrictFeedItem(`${item.title} ${item.description}`));
+    let archiveChanged = false;
+    for (const item of unique) {
+        if (!newsArchive.has(item.url) && item.publishedAt) {
+            newsArchive.set(item.url, { ...item, favorite: isGmuendItem(item) });
+            archiveChanged = true;
+        }
+    }
+    if (archiveChanged) saveNewsArchive();
+    const freshCutoff = Date.now() - NEWS_MAX_AGE_MS;
+    const isFresh = item => (Date.parse(item.publishedAt) || 0) >= freshCutoff;
+    const archive = [...newsArchive.values()]
+        .filter(item => !isFresh(item))
+        .sort((a, b) => (Date.parse(b.publishedAt) || 0) - (Date.parse(a.publishedAt) || 0))
+        .slice(0, 500);
+    unique = unique.filter(isFresh);
     const gmuend = unique.filter(item => item.scope === 'gmuend' || (item.scope === 'region' ? isGmuendDistrictFeedItem(`${item.title} ${item.description}`) : item.scope === 'austria' && isGmuendDistrictFeedItem(`${item.title} ${item.description}`)))
         .map(item => ({ ...item, favorite: true }));
     const region = unique.filter(item => item.scope === 'region');
@@ -591,6 +629,7 @@ async function loadNews() {
         austria: austria.slice(0, 60),
         world: world.slice(0, 60),
         breaking,
+        archive,
         sources: NEWS_SOURCES.map(source => ({ id: source.id, name: source.name, ok: !newsCache.get(source.id)?.error, count: newsCache.get(source.id)?.items.length || 0 })),
         updatedAt: new Date().toISOString()
     };
