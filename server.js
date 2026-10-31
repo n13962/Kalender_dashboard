@@ -645,6 +645,75 @@ app.get('/api/news', async (req, res) => {
     }
 });
 
+const TENNIS_URL = 'https://site.api.espn.com/apis/site/v2/sports/tennis/atp/scoreboard';
+let tennisCache = { at: 0, data: null };
+let tennisRequest = null;
+
+function viennaDay(value) {
+    const date = new Date(value);
+    return Number.isNaN(date.getTime()) ? '' : date.toLocaleDateString('sv-SE', { timeZone: 'Europe/Vienna' });
+}
+
+function parseTennisMatch(competition, tournament) {
+    const players = (competition.competitors || []).slice().sort((a, b) => (a.order || 0) - (b.order || 0)).map(player => ({
+        name: String(player.athlete?.displayName || player.athlete?.shortName || '?'),
+        country: String(player.athlete?.flag?.alt || ''),
+        flag: /^https:\/\/a\.espncdn\.com\//.test(player.athlete?.flag?.href || '') ? player.athlete.flag.href : '',
+        sets: (player.linescores || []).map(set => Number(set.value)),
+        winner: player.winner === true
+    }));
+    const type = competition.status?.type || {};
+    return {
+        id: String(competition.id),
+        tournament,
+        round: String(competition.round?.displayName || ''),
+        court: String(competition.venue?.court || ''),
+        startTime: competition.startDate || competition.date || '',
+        state: type.state || 'pre',
+        detail: String(type.detail || type.description || ''),
+        note: String(competition.notes?.[0]?.text || ''),
+        players
+    };
+}
+
+async function loadTennis() {
+    const response = await fetch(TENNIS_URL, { headers: { 'User-Agent': 'Mozilla/5.0 Familien-Dashboard' }, signal: AbortSignal.timeout(12000) });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const raw = await response.json();
+    const today = viennaDay(Date.now());
+    const live = [];
+    const today_ = [];
+    for (const event of raw.events || []) {
+        const singles = (event.groupings || []).find(group => group.grouping?.slug === 'mens-singles');
+        for (const competition of singles?.competitions || []) {
+            if ((competition.competitors || []).length < 2) continue;
+            const state = competition.status?.type?.state;
+            if (state === 'in') live.push(parseTennisMatch(competition, event.name));
+            else if (viennaDay(competition.startDate || competition.date) === today) today_.push(parseTennisMatch(competition, event.name));
+        }
+    }
+    const byTime = (a, b) => String(a.startTime).localeCompare(String(b.startTime));
+    return {
+        live: live.sort(byTime),
+        upcoming: today_.filter(match => match.state === 'pre').sort(byTime),
+        finished: today_.filter(match => match.state === 'post').sort((a, b) => byTime(b, a)),
+        updatedAt: new Date().toISOString()
+    };
+}
+
+app.get('/api/tennis', async (req, res) => {
+    const maxAge = tennisCache.data?.live.length ? 12000 : 60000;
+    if (tennisCache.data && Date.now() - tennisCache.at < maxAge) return res.set('Cache-Control', 'no-store').json(tennisCache.data);
+    try {
+        tennisRequest ||= loadTennis().finally(() => { tennisRequest = null; });
+        tennisCache = { at: Date.now(), data: await tennisRequest };
+        res.set('Cache-Control', 'no-store').json(tennisCache.data);
+    } catch (error) {
+        if (tennisCache.data) return res.set('Cache-Control', 'no-store').json({ ...tennisCache.data, stale: true });
+        res.status(502).json({ error: 'Tennis-Daten konnten nicht geladen werden.' });
+    }
+});
+
 const DARTS_LEAGUE_ID = '4554';
 const dartsDayCache = new Map();
 let dartsBlockedUntil = 0;

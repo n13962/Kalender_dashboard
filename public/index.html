@@ -1078,6 +1078,13 @@
                                 <div id="dashboard-home-assistant-devices" class="space-y-1.5 min-h-[45px]"></div>
                             </div>
                         </div>
+                        <section id="dashboard-panel-live-sport" class="mt-3 hidden overflow-hidden rounded-2xl border border-rose-400/30 bg-slate-950/70 shadow-sm">
+                            <div class="flex items-center justify-between gap-3 border-b border-rose-400/20 px-4 py-3">
+                                <h3 class="text-sm font-bold text-slate-100"><i class="football-live-indicator fa-solid fa-circle mr-2 text-[8px] text-rose-400"></i>Jetzt live im Sport</h3>
+                                <button type="button" onclick="switchTab('football'); setFootballTabLeague('tennis')" class="text-[11px] font-semibold text-emerald-300">Alle ansehen</button>
+                            </div>
+                            <div id="live-sport-body" class="grid grid-cols-1 gap-2 p-3 sm:grid-cols-2"></div>
+                        </section>
                         <section id="dashboard-panel-local-updates" class="mt-3 overflow-hidden rounded-2xl border border-sky-400/20 bg-slate-950/70 shadow-sm">
                             <div class="flex items-center justify-between gap-3 border-b border-sky-400/15 px-4 py-3">
                                 <div class="flex min-w-0 items-center gap-3">
@@ -5348,6 +5355,7 @@
             { key: 'bundesliga-de', label: 'Bundesliga Deutschland', icon: 'fa-flag' },
             { key: 'premier-league', label: 'Premier League', icon: 'fa-flag' },
             { key: 'la-liga', label: 'La Liga', icon: 'fa-flag' },
+            { key: 'tennis', label: 'Tennis (Herren)', icon: 'fa-baseball' },
             { key: 'darts', label: 'Darts', icon: 'fa-bullseye' }
         ];
         const footballTab = { league: 'champions-league', view: 'matches', filter: 'upcoming', matches: {}, standings: {}, errors: {}, fetchedAt: {}, inFlight: {} };
@@ -5799,6 +5807,7 @@
         async function refreshFootballTab(force = false) {
             const key = footballTab.league;
             if (key === 'darts') return loadDarts(force);
+            if (key === 'tennis') return loadTennis(force);
             const matches = footballTab.matches[key];
             const isLive = Boolean(matches?.items.some(match => match.status.state === 'in'));
             const age = kind => Date.now() - (footballTab.fetchedAt[`${kind}:${key}`] || 0);
@@ -5917,10 +5926,10 @@
                 segment(footballTab.filter === 'upcoming', 'setFootballTabFilter', 'upcoming', 'Kommende') +
                 segment(footballTab.filter === 'results', 'setFootballTabFilter', 'results', 'Ergebnisse');
 
-            if (key === 'darts') {
+            if (key === 'darts' || key === 'tennis') {
                 document.getElementById('football-tab-views').classList.add('hidden');
                 filters.classList.add('hidden');
-                renderDartsTab();
+                if (key === 'darts') renderDartsTab(); else renderTennisTab();
                 return;
             }
             document.getElementById('football-tab-views').classList.remove('hidden');
@@ -5960,6 +5969,7 @@
             } finally {
                 dartsState.loading = false;
                 if (state.currentTab === 'football' && footballTab.league === 'darts') renderFootballTab();
+                renderLiveSportPanel();
             }
         }
 
@@ -6011,6 +6021,87 @@
             </div>`;
         }
 
+
+
+        const tennisState = { data: null, error: '', loading: false, fetchedAt: 0 };
+
+        async function loadTennis(force = false) {
+            const maxAge = tennisState.data?.live?.length ? 12000 : 60000;
+            if (tennisState.loading || (!force && tennisState.data && Date.now() - tennisState.fetchedAt < maxAge)) return;
+            tennisState.loading = true;
+            try {
+                const response = await fetch('/api/tennis', { cache: 'no-store' });
+                const result = await response.json();
+                if (!response.ok) throw new Error(result.error || 'Tennis-Daten nicht verfügbar.');
+                tennisState.data = result;
+                tennisState.error = '';
+                tennisState.fetchedAt = Date.now();
+            } catch (error) {
+                tennisState.error = error.message;
+            } finally {
+                tennisState.loading = false;
+                if (state.currentTab === 'football' && footballTab.league === 'tennis') renderFootballTab();
+                renderLiveSportPanel();
+            }
+        }
+
+        function tennisMatchHtml(match) {
+            const live = match.state === 'in';
+            const start = new Date(match.startTime);
+            const time = Number.isNaN(start.getTime()) ? '' : start.toLocaleTimeString('de-AT', { hour: '2-digit', minute: '2-digit' });
+            const rows = match.players.map(player => `
+                <div class="flex items-center gap-2">
+                    ${player.flag ? `<img src="${escapeHtml(player.flag)}" alt="${escapeHtml(player.country)}" class="h-3.5 w-5 shrink-0 rounded-sm object-cover" loading="lazy" referrerpolicy="no-referrer">` : ''}
+                    <span class="min-w-0 flex-1 truncate text-sm ${player.winner ? 'font-extrabold text-emerald-300' : 'font-semibold text-slate-100'}">${escapeHtml(player.name)}</span>
+                    <span class="flex gap-2 tabular-nums text-sm font-bold text-slate-100">${player.sets.length ? player.sets.map(set => `<span class="w-4 text-center">${escapeHtml(set)}</span>`).join('') : '<span class="w-4 text-center text-slate-500">–</span>'}</span>
+                </div>`).join('');
+            const status = live ? `<span class="text-rose-300"><i class="football-live-indicator fa-solid fa-circle mr-1 text-[7px]"></i>${escapeHtml(match.detail || 'Live')}</span>`
+                : match.state === 'post' ? '<span class="text-slate-400">Beendet</span>' : `<span class="text-slate-300">${escapeHtml(time)} Uhr</span>`;
+            return `<div class="rounded-xl border ${live ? 'border-rose-400/40 bg-rose-950/20' : 'border-indigo-500/15 bg-slate-950/60'} px-3 py-2.5">
+                <div class="mb-1.5 flex items-center justify-between gap-2 text-[10px] font-semibold">${status}<span class="truncate text-slate-500">${escapeHtml([match.tournament, match.round, match.court].filter(Boolean).join(' · '))}</span></div>
+                <div class="space-y-1">${rows}</div></div>`;
+        }
+
+        function renderTennisTab() {
+            const content = document.getElementById('football-tab-content');
+            const status = document.getElementById('football-tab-updated');
+            const data = tennisState.data;
+            if (!data) {
+                status.textContent = tennisState.error ? `Fehler: ${tennisState.error}` : 'Lade Daten …';
+                content.innerHTML = `<p class="rounded-xl border border-indigo-500/15 bg-slate-950/60 px-4 py-6 text-center text-xs text-slate-400">${escapeHtml(tennisState.error ? 'Tennis-Daten sind gerade nicht verfügbar.' : 'Tennis-Daten werden geladen …')}</p>`;
+                return;
+            }
+            status.textContent = `ATP Herren · Stand ${new Date(data.updatedAt).toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}${data.live.length ? ' · Live' : ''}${data.stale ? ' · evtl. veraltet' : ''}`;
+            const section = (title, items, empty) => `<div class="space-y-1.5"><h3 class="text-xs font-bold uppercase tracking-wide text-slate-400">${title}</h3>${items.length ? items.map(tennisMatchHtml).join('') : `<p class="rounded-xl border border-indigo-500/15 bg-slate-950/60 px-3 py-3 text-xs text-slate-400">${empty}</p>`}</div>`;
+            content.innerHTML = `<div class="space-y-4">
+                ${section('Live', data.live, 'Gerade läuft kein Herren-Match.')}
+                ${section('Heute noch', data.upcoming, 'Heute keine weiteren Matches.')}
+                ${section('Heute beendet', data.finished, 'Noch keine beendeten Matches heute.')}
+                <p class="text-[10px] text-slate-500">Quelle: ESPN (ATP Herren, Einzel). Aktualisierung alle paar Sekunden, solange ein Match läuft.</p>
+            </div>`;
+        }
+
+        function renderLiveSportPanel() {
+            const panel = document.getElementById('dashboard-panel-live-sport');
+            const body = document.getElementById('live-sport-body');
+            if (!panel || !body) return;
+            const tennis = tennisState.data?.live || [];
+            const dartsToday = (dartsState.data?.live || []).filter(event => event.status !== 'FT');
+            panel.classList.toggle('hidden', !tennis.length && !dartsToday.length);
+            body.innerHTML = [
+                ...tennis.slice(0, 4).map(tennisMatchHtml),
+                ...dartsToday.map(event => dartsEventHtml(event, 'live'))
+            ].join('');
+        }
+
+        function pollLiveSport() {
+            if (document.hidden) return;
+            loadTennis(false);
+            if (!dartsState.data || Date.now() - dartsState.fetchedAt > 5 * 60 * 1000) loadDarts(true);
+        }
+
+        setTimeout(pollLiveSport, 6000);
+        setInterval(pollLiveSport, 15000);
 
         const newsState = { data: null, scope: 'gmuend', search: '', archiveOnlyFavorite: false, loading: false, error: '', fetchedAt: 0 };
         const NEWS_SCOPES = [
