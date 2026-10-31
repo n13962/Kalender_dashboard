@@ -1652,7 +1652,8 @@ const SYNC_KEYS = new Set([
     'familien-dashboard-custom-tabs',
     'familien-dashboard-tasks',
     'familien-dashboard-habits',
-    'familien-dashboard-points'
+    'familien-dashboard-points',
+    'familien-dashboard-shopping'
 ]);
 const MAX_SYNC_VALUE_LENGTH = 1500000;
 

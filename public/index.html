@@ -2391,10 +2391,7 @@
                 { id: 'e2', title: 'Elternabend Schule', date: '2026-06-18', time: '19:00', memberId: 'm1' }
             ],
             externalCalendarEvents: [],
-            shopping: [
-                { id: 's1', text: 'Vollkornmilch 2L', category: 'Milchprodukte & Kühlung', completed: false },
-                { id: 's2', text: 'Frisches Bio-Obst', category: 'Obst & Gemüse', completed: false }
-            ],
+            shopping: [],
             tasks: [
                 { id: 't1', title: 'Küche aufräumen & Spülmaschine', memberId: 'm2', completed: false }
             ],
@@ -2446,6 +2443,7 @@
         const QUICK_EVENT_PRESETS_MIGRATED_KEY = 'familien-dashboard-calendar-quick-events-migrated';
         const TASKS_STORAGE_KEY = 'familien-dashboard-tasks';
         const HABITS_STORAGE_KEY = 'familien-dashboard-habits';
+        const SHOPPING_STORAGE_KEY = 'familien-dashboard-shopping';
         const POINTS_STORAGE_KEY = 'familien-dashboard-points';
         const FOOTER_SETTINGS_KEY = 'familien-dashboard-footer-settings';
         let pointSystemEnabled = false;
@@ -3738,6 +3736,16 @@
                         completedDates: Array.isArray(habit.completedDates) ? habit.completedDates.filter(date => /^\d{4}-\d{2}-\d{2}$/.test(date)) : []
                     }));
                 }
+                const savedShopping = localStorage.getItem(SHOPPING_STORAGE_KEY);
+                if (savedShopping !== null) {
+                    const shopping = JSON.parse(savedShopping);
+                    if (Array.isArray(shopping)) state.shopping = shopping.filter(item => item && item.id && item.text).slice(0, 500).map(item => ({
+                        id: String(item.id),
+                        text: String(item.text).slice(0, 200),
+                        category: String(item.category || '').slice(0, 60),
+                        completed: Boolean(item.completed)
+                    }));
+                }
             } catch (error) {}
         }
 
@@ -3745,6 +3753,12 @@
             try {
                 localStorage.setItem(TASKS_STORAGE_KEY, JSON.stringify(state.tasks));
                 localStorage.setItem(HABITS_STORAGE_KEY, JSON.stringify(state.habits));
+            } catch (error) {}
+        }
+
+        function saveShoppingList() {
+            try {
+                localStorage.setItem(SHOPPING_STORAGE_KEY, JSON.stringify(state.shopping));
             } catch (error) {}
         }
 
@@ -4436,9 +4450,10 @@
             document.getElementById('offers-categories').classList.toggle('hidden', Boolean(search));
             document.getElementById('offers-search-clear').classList.toggle('hidden', !search);
             renderOffersWebComparison(offers);
+            offersView.lookup = new Map(offers.map(offer => [offer.id, offer]));
             document.getElementById('offers-list').innerHTML = offers.length ? offers.map(offer => {
                 const card = `
-                    <div class="flex h-full flex-col gap-2 rounded-xl border border-slate-800 bg-slate-950/70 p-3">
+                    <div class="flex flex-1 flex-col gap-2">
                         ${offer.image ? `<div class="flex h-40 items-center justify-center overflow-hidden rounded-lg bg-white"><img src="${escapeHtml(offer.image)}" alt="Prospektbild: ${escapeHtml(offer.title)}" loading="lazy" referrerpolicy="no-referrer" onerror="this.parentElement.remove()" class="h-full w-full object-contain"></div>` : ''}
                         <div class="flex items-start justify-between gap-2">
                             <span class="rounded-lg bg-indigo-500/20 px-2 py-0.5 text-[10px] font-bold text-indigo-200">${escapeHtml(offer.retailer)}</span>
@@ -4454,7 +4469,10 @@
                             <p class="text-right text-[10px] text-slate-500">${escapeHtml(categoryNames[offer.category] || '')}<br>bis ${date(offer.validTo)}</p>
                         </div>
                     </div>`;
-                return offer.url ? `<a href="${escapeHtml(offer.url)}" target="_blank" rel="noopener noreferrer" class="block">${card}</a>` : card;
+                const content = offer.url ? `<a href="${escapeHtml(offer.url)}" target="_blank" rel="noopener noreferrer" class="flex flex-1 flex-col">${card}</a>` : card;
+                return `<div class="flex h-full flex-col gap-2 rounded-xl border border-slate-800 bg-slate-950/70 p-3">${content}
+                    <button type="button" data-offer-add="${offer.id}" onclick="addOfferToShopping(${offer.id})" class="min-h-10 rounded-xl border border-emerald-500/40 bg-emerald-500/10 px-3 text-xs font-bold text-emerald-300 hover:bg-emerald-500/20"><i class="fa-solid fa-cart-plus"></i> Auf die Liste</button>
+                </div>`;
             }).join('') : '<p class="text-xs text-slate-500">Keine Angebote für diese Auswahl.</p>';
         }
 
@@ -5729,7 +5747,7 @@
         }
 
         // Geräte-Sync: gemeinsame Daten werden über den Server auf alle Geräte verteilt
-        const SYNC_KEYS = [MEMBER_STORAGE_KEY, BIRTHDAY_STORAGE_KEY, EVENTS_STORAGE_KEY, FOOTBALL_TEAMS_STORAGE_KEY, CUSTOM_TABS_STORAGE_KEY, TASKS_STORAGE_KEY, HABITS_STORAGE_KEY, POINTS_STORAGE_KEY];
+        const SYNC_KEYS = [MEMBER_STORAGE_KEY, BIRTHDAY_STORAGE_KEY, EVENTS_STORAGE_KEY, FOOTBALL_TEAMS_STORAGE_KEY, CUSTOM_TABS_STORAGE_KEY, TASKS_STORAGE_KEY, HABITS_STORAGE_KEY, POINTS_STORAGE_KEY, SHOPPING_STORAGE_KEY];
         const SYNC_PENDING_KEY = 'familien-dashboard-sync-pending';
         const SYNC_JOINED_KEY = 'familien-dashboard-sync-joined';
         const nativeStorageSetItem = Storage.prototype.setItem;
@@ -5806,7 +5824,8 @@
             if (changed(MEMBER_STORAGE_KEY)) run(loadSavedMembers);
             if (changed(BIRTHDAY_STORAGE_KEY)) run(loadSavedBirthdays);
             if (changed(EVENTS_STORAGE_KEY)) run(loadSavedCalendarEvents);
-            if (changed(TASKS_STORAGE_KEY) || changed(HABITS_STORAGE_KEY)) run(loadOrganizerData);
+            if (changed(TASKS_STORAGE_KEY) || changed(HABITS_STORAGE_KEY) || changed(SHOPPING_STORAGE_KEY)) run(loadOrganizerData);
+            if (changed(SHOPPING_STORAGE_KEY)) run(renderShoppingList);
             if (changed(POINTS_STORAGE_KEY)) run(loadPointSettings);
             if (changed(CUSTOM_TABS_STORAGE_KEY)) run(loadCustomTabs);
             if (changed(FOOTBALL_TEAMS_STORAGE_KEY)) run(applyFootballSelectionFromStorage);
@@ -6791,16 +6810,40 @@
             input.value = '';
             const category = determineCategoryFallback(text);
             state.shopping.push({ id: 's_' + Date.now(), text, category, completed: false });
+            saveShoppingList();
             renderShoppingList();
             renderDashboardOverview();
         }
 
-        function toggleShoppingItem(id) { state.shopping.find(s => s.id === id).completed ^= true; renderShoppingList(); renderDashboardOverview(); }
-        function deleteShoppingItem(id) { state.shopping = state.shopping.filter(s => s.id !== id); renderShoppingList(); renderDashboardOverview(); }
-        function resetShoppingList() { state.shopping.forEach(s => s.completed = false); renderShoppingList(); renderDashboardOverview(); }
+        function addOfferToShopping(offerId) {
+            const offer = offersView.lookup?.get(offerId);
+            if (!offer) return;
+            const text = [offer.title, offer.description].filter(Boolean).join(' – ').slice(0, 200) + ` (${offer.retailer}, ${offer.price.toLocaleString('de-AT', { style: 'currency', currency: 'EUR' })})`;
+            if (state.shopping.some(item => item.text === text && !item.completed)) {
+                showOfferAddedHint(offerId, 'Schon auf der Liste');
+                return;
+            }
+            state.shopping.push({ id: 's_' + Date.now() + Math.random().toString(36).slice(2, 6), text, category: determineCategoryFallback(offer.title), completed: false });
+            saveShoppingList();
+            renderShoppingList();
+            renderDashboardOverview();
+            showOfferAddedHint(offerId, 'Zur Liste hinzugefügt');
+        }
+
+        function showOfferAddedHint(offerId, message) {
+            const button = document.querySelector(`[data-offer-add="${CSS.escape(String(offerId))}"]`);
+            if (!button) return;
+            button.innerHTML = `<i class="fa-solid fa-check"></i> ${escapeHtml(message)}`;
+            setTimeout(() => { button.innerHTML = '<i class="fa-solid fa-cart-plus"></i> Auf die Liste'; }, 2000);
+        }
+
+        function toggleShoppingItem(id) { state.shopping.find(s => s.id === id).completed ^= true; saveShoppingList(); renderShoppingList(); renderDashboardOverview(); }
+        function deleteShoppingItem(id) { state.shopping = state.shopping.filter(s => s.id !== id); saveShoppingList(); renderShoppingList(); renderDashboardOverview(); }
+        function resetShoppingList() { state.shopping.forEach(s => s.completed = false); saveShoppingList(); renderShoppingList(); renderDashboardOverview(); }
         function clearShoppingList() {
             if (!state.shopping.length || !window.confirm('Möchtest du wirklich alle Einträge aus der Einkaufsliste löschen?')) return;
             state.shopping = [];
+            saveShoppingList();
             renderShoppingList();
             renderDashboardOverview();
         }
@@ -7274,6 +7317,7 @@
                     const category = determineCategoryFallback(ing);
                     state.shopping.push({ id: 's_' + Date.now() + Math.random(), text: ing, category, completed: false });
                 }
+                saveShoppingList();
                 renderShoppingList();
                 closeRecipeModal();
                 switchTab('shopping');
