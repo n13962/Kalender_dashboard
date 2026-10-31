@@ -730,14 +730,22 @@ function parseFireFeed(xml, district) {
         incidentCount: Number.parseInt(xmlValue(bazBlock, 'CountEinsatz'), 10) || 0,
         level: Number.parseInt(xmlValue(bazBlock, 'nStufe'), 10) || 0
     } : null;
-    return { stations, summary };
+    const overview = [...xml.matchAll(/<aBAZID[^>]*>([\s\S]*?)<\/aBAZID>/g)].map(match => {
+        const code = xmlValue(match[1], 'cBezirk').trim();
+        return {
+            code,
+            stations: Number.parseInt(xmlValue(match[1], 'CountFeuerwehr'), 10) || 0,
+            incidents: Number.parseInt(xmlValue(match[1], 'CountEinsatz'), 10) || 0
+        };
+    }).filter(item => FIRE_DISTRICT_CODES.has(item.code));
+    return { stations, summary, overview };
 }
 
 async function refreshFireData(district) {
     const fireState = getFireState(district);
     const response = await fetch(`${FIRE_FEED_URL}${district}`, { headers: { 'User-Agent': 'Mozilla/5.0 Familien-Dashboard' }, signal: AbortSignal.timeout(10000) });
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    const { stations, summary } = parseFireFeed(await response.text(), district);
+    const { stations, summary, overview } = parseFireFeed(await response.text(), district);
     if (!stations.length) throw new Error('Keine Feuerwehr-Daten gefunden.');
     const now = new Date().toISOString();
     const next = new Map();
@@ -754,6 +762,7 @@ async function refreshFireData(district) {
     fireState.stations = next;
     fireState.baseline = true;
     fireState.summary = summary;
+    fireState.overview = overview;
     fireState.updatedAt = now;
     fireState.error = null;
 }
@@ -799,6 +808,7 @@ app.get('/api/fire', async (req, res) => {
     res.set('Cache-Control', 'no-store').json({
         districtCode: district,
         district: fireState.summary?.name || `BAZ ${fireDistrictName(district)}`,
+        overview: (fireState.overview || []).map(item => ({ ...item, name: fireDistrictName(item.code) })),
         stationCount: stations.length,
         stations: stations.map(({ id, name }) => ({ id, name })).sort((a, b) => a.name.localeCompare(b.name, 'de')),
         activeCount: active.length,

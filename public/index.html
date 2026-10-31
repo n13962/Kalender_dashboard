@@ -1389,6 +1389,7 @@
                         <div id="fire-filter-list" class="grid max-h-60 gap-1 overflow-y-auto sm:grid-cols-2"></div>
                     </div>
                     <div id="fire-summary" class="grid grid-cols-2 gap-3"></div>
+                    <section id="fire-overview" aria-label="Übersicht Niederösterreich" class="space-y-2 rounded-xl border border-slate-700 bg-slate-800/40 p-3"></section>
                     <div>
                         <h3 class="mb-2 text-xs font-bold uppercase tracking-wide text-slate-400">Aktuell im Einsatz</h3>
                         <div id="fire-active" class="grid gap-2 sm:grid-cols-2"></div>
@@ -5433,6 +5434,30 @@
             </div>`;
         }
 
+        function renderFireOverview(data) {
+            const box = document.getElementById('fire-overview');
+            const items = data.overview || [];
+            if (!box) return;
+            if (!items.length) { box.innerHTML = ''; return; }
+            const totalStations = items.reduce((sum, item) => sum + item.stations, 0);
+            const totalIncidents = items.reduce((sum, item) => sum + item.incidents, 0);
+            const activeDistricts = items.filter(item => item.stations > 0 || item.incidents > 0).sort((a, b) => b.stations - a.stations || b.incidents - a.incidents);
+            const own = items.find(item => item.code === data.districtCode);
+            box.innerHTML = `
+                <div class="flex items-center justify-between gap-2">
+                    <h3 class="text-sm font-bold text-slate-100"><i class="fa-solid fa-map-location-dot mr-1 text-amber-400"></i>Niederösterreich gesamt</h3>
+                    <span class="text-[11px] text-slate-400">${activeDistricts.length} von ${items.length} Bezirken aktiv</span>
+                </div>
+                <div class="grid grid-cols-3 gap-2 text-center">
+                    <div class="rounded-lg bg-slate-900/70 p-2"><p class="text-2xl font-black ${totalStations ? 'text-red-300' : 'text-emerald-300'}">${totalStations}</p><p class="text-[10px] text-slate-400">Feuerwehren unterwegs</p></div>
+                    <div class="rounded-lg bg-slate-900/70 p-2"><p class="text-2xl font-black text-slate-100">${totalIncidents}</p><p class="text-[10px] text-slate-400">Einsätze gemeldet</p></div>
+                    <div class="rounded-lg bg-slate-900/70 p-2"><p class="text-2xl font-black text-amber-300">${own ? own.stations : 0}</p><p class="text-[10px] text-slate-400">in ${escapeHtml(own?.name || 'meinem Bezirk')}</p></div>
+                </div>
+                <div class="flex flex-wrap gap-1.5">
+                    ${activeDistricts.map(item => `<button type="button" onclick="setFireDistrict('${escapeHtml(item.code)}')" class="min-h-8 rounded-full border px-2.5 text-[11px] ${item.code === data.districtCode ? 'border-amber-400/60 bg-amber-500/10 text-amber-200' : 'border-slate-600 text-slate-300 hover:bg-slate-800'}">${escapeHtml(item.name)} · ${item.stations} FF${item.incidents ? ` · ${item.incidents} ${item.incidents === 1 ? 'Einsatz' : 'Einsätze'}` : ''}</button>`).join('') || '<p class="text-[11px] text-slate-400">Aktuell ist in ganz Niederösterreich keine Feuerwehr im Einsatz.</p>'}
+                </div>`;
+        }
+
         function renderFireTab() {
             const data = fireClient.data;
             const summary = document.getElementById('fire-summary');
@@ -5458,6 +5483,7 @@
                     <p class="text-3xl font-black text-slate-100">${data.incidentCount}</p>
                     <p class="text-xs text-slate-300">Einsätze im Bezirk</p>
                 </div>`;
+            renderFireOverview(data);
             const alerted = visible.alerted.map(item => fireCardHtml(item, 'orange')).join('');
             active.innerHTML = (visible.active.map(item => fireCardHtml(item, 'red')).join('') + alerted) || '<p class="text-sm text-slate-400">Aktuell ist keine Feuerwehr im Einsatz.</p>';
             history.innerHTML = visible.history.map(item => fireCardHtml(item, 'grey')).join('') || '<p class="text-sm text-slate-400">Seit dem Serverstart gab es keine neuen Ausrückungen.</p>';
