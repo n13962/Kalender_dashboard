@@ -17,6 +17,7 @@ const DASHBOARD_PASSWORD = process.env.DASHBOARD_PASSWORD || '';
 const HOME_ASSISTANT_URL = process.env.HOME_ASSISTANT_URL || '';
 const HOME_ASSISTANT_TOKEN = process.env.HOME_ASSISTANT_TOKEN || '';
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || '';
+const TELEGRAM_AUTO_ALERTS = process.env.TELEGRAM_AUTO_ALERTS !== 'off';
 const TELEGRAM_CHAT_ID = (process.env.TELEGRAM_CHAT_ID || '').trim();
 if (TELEGRAM_CHAT_ID && !TELEGRAM_BOT_TOKEN) console.error('Telegram-Feuerwehrbenachrichtigungen benötigen TELEGRAM_BOT_TOKEN.');
 const AUTH_SESSION_COOKIE = 'familien_dashboard_session';
@@ -661,7 +662,7 @@ async function sendTelegramMessage(text, recipient) {
 }
 
 async function sendFireTelegramAlert(district, summary, station, startedAt, status) {
-    if (!fireTelegramEnabled || !TELEGRAM_BOT_TOKEN) return;
+    if (!fireTelegramEnabled || !TELEGRAM_BOT_TOKEN || !TELEGRAM_AUTO_ALERTS) return;
     const recipients = fireTelegramRecipients.filter(recipient => recipient.subscriptions.some(subscription =>
         subscription.district === district && (!subscription.stations.length || subscription.stations.includes(station.id))));
     if (!recipients.length) return;
@@ -1261,7 +1262,7 @@ async function checkFootballGoals() {
     try {
         const favorites = getFavoriteFootballTeamIds();
         const enabled = syncData.items[FOOTBALL_PUSH_KEY]?.value !== 'false';
-        if (!favorites.size || !enabled || !TELEGRAM_BOT_TOKEN || !fireTelegramRecipients.length) {
+        if (!favorites.size || !enabled || !TELEGRAM_BOT_TOKEN || !TELEGRAM_AUTO_ALERTS || !fireTelegramRecipients.length) {
             footballGoalBaseline = null;
             return;
         }
