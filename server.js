@@ -714,6 +714,284 @@ app.get('/api/tennis', async (req, res) => {
     }
 });
 
+const FIS_SPORTS = {
+    AL: { slug: 'alpine-skiing', name: 'Ski Alpin' },
+    JP: { slug: 'ski-jumping', name: 'Skispringen' },
+    CC: { slug: 'cross-country', name: 'Langlauf' }
+};
+const WINTER_SPORTS = ['AL', 'JP', 'CC', 'BT'];
+const IBU_API = 'https://biathlonresults.com/modules/sportapi/api';
+const MONTHS = { jan: 1, feb: 2, mar: 3, apr: 4, may: 5, jun: 6, jul: 7, aug: 8, sep: 9, oct: 10, nov: 11, dec: 12 };
+const winterCache = new Map();
+
+function winterNow() {
+    const test = process.env.WINTER_TEST_NOW ? new Date(process.env.WINTER_TEST_NOW) : null;
+    return test && !Number.isNaN(test.getTime()) ? test : new Date();
+}
+
+function viennaParts(date) {
+    const [year, month, day] = date.toLocaleDateString('sv-SE', { timeZone: 'Europe/Vienna' }).split('-').map(Number);
+    return { year, month, day, iso: `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}` };
+}
+
+function addDays(iso, days) {
+    const date = new Date(`${iso}T12:00:00Z`);
+    date.setUTCDate(date.getUTCDate() + days);
+    return date.toISOString().slice(0, 10);
+}
+
+function fisSeasonCode(now) {
+    const { year, month } = viennaParts(now);
+    return month >= 7 ? year + 1 : year;
+}
+
+async function cachedRemote(key, ttl, loader) {
+    const hit = winterCache.get(key);
+    if (hit && Date.now() - hit.at < ttl) return hit.value;
+    try {
+        const value = await loader();
+        winterCache.set(key, { at: Date.now(), value });
+        return value;
+    } catch (error) {
+        if (hit) return hit.value;
+        throw error;
+    }
+}
+
+async function fisText(url, ttl) {
+    return cachedRemote(url, ttl, async () => {
+        const response = await fetch(url, { headers: { 'User-Agent': 'Mozilla/5.0 Familien-Dashboard' }, signal: AbortSignal.timeout(15000) });
+        if (!response.ok) throw new Error(`FIS HTTP ${response.status}`);
+        const text = await response.text();
+        if (text.length > 4 * 1024 * 1024) throw new Error('FIS-Seite zu groß');
+        return text;
+    });
+}
+
+function htmlTokens(fragment) {
+    return decodeFeedText(String(fragment).replace(/<[^>]+>/g, '|')).split('|').map(token => token.trim()).filter(Boolean);
+}
+
+async function fisEvents(sector, season) {
+    const html = await fisText(`https://www.fis-ski.com/DB/general/calendar-results.html?sectorcode=${sector}&seasoncode=${season}&categorycode=WC`, 6 * 3600 * 1000);
+    const events = [];
+    const blocks = html.split(/(?=<div class="table-row reset-padding[^"]*"[^>]*id="\d+">)/).slice(1);
+    for (const block of blocks) {
+        const id = Number((block.match(/^<div[^>]*id="(\d+)">/) || [])[1]);
+        const tokens = htmlTokens(block.slice(0, 6000));
+        const dateMatch = tokens.slice(0, 10).join('|').match(/(\d{1,2})(?: ([A-Z][a-z]{2}))?-?\|?(?:(\d{1,2})(?: ([A-Z][a-z]{2}))?)? ?(\d{4})/);
+        if (!id || !dateMatch) continue;
+        const [, startDay, month1, endDay, month2, yearText] = dateMatch;
+        const startMonth = MONTHS[(month1 || month2 || '').toLowerCase()];
+        const endMonth = MONTHS[(month2 || month1 || '').toLowerCase()];
+        if (!startMonth || !endMonth) continue;
+        const endYear = Number(yearText);
+        const startYear = startMonth > endMonth ? endYear - 1 : endYear;
+        const pad = value => String(value).padStart(2, '0');
+        const start = `${startYear}-${pad(startMonth)}-${pad(startDay)}`;
+        const end = `${endYear}-${pad(endMonth)}-${pad(endDay || startDay)}`;
+        const place = (block.match(/class="clip bold font_md_large">([^<]+)</) || [])[1];
+        const nation = (block.match(/country__name-short">([A-Z]{3})</) || [])[1] || '';
+        if (place) events.push({ id, start, end, place: decodeFeedText(place), nation });
+    }
+    return events;
+}
+
+function fisRaceState(official, runs, day, today, hasRows) {
+    if (day < today) return 'done';
+    if (day > today || !hasRows) return 'upcoming';
+    return official >= Math.max(runs, 1) ? 'done' : 'live';
+}
+
+async function fisEventRaces(sector, season, event, ttl) {
+    const html = await fisText(`https://www.fis-ski.com/DB/general/event-details.html?sectorcode=${sector}&eventid=${event.id}&seasoncode=${season}`, ttl);
+    const races = [];
+    const blocks = html.split(/(?=<div class="table-row reset-padding)/).slice(1);
+    for (const block of blocks) {
+        const raceId = (block.match(/raceid=(\d+)/) || [])[1];
+        if (!raceId) continue;
+        const tokens = htmlTokens(block);
+        const text = tokens.join('|');
+        const match = text.match(/(\d{1,2}) ([A-Z][a-z]{2})(?: (\d{4}))?\|(\d{1,2}:\d{2})\|\d+\|(?:review\|)?([^|]+)\|[^|]*\|([A-Z]+)\|([MW])\|/);
+        if (!match) continue;
+        const [, dayNum, monthName, yearText, time, discipline, category, gender] = match;
+        const month = MONTHS[monthName.toLowerCase()];
+        if (!month || /^(TRA|TRI)$/.test(category) || /training|trial/i.test(discipline)) continue;
+        const year = Number(yearText) || (month >= 7 ? season - 1 : season);
+        races.push({
+            id: `fis-${sector}-${raceId}`,
+            raceId,
+            sector,
+            day: `${year}-${String(month).padStart(2, '0')}-${String(dayNum).padStart(2, '0')}`,
+            time,
+            place: event.place,
+            nation: event.nation,
+            name: discipline.trim(),
+            gender,
+            official: (text.match(/Official results/g) || []).length,
+            runs: (text.match(/\|(?:1st|2nd) \|/g) || []).length
+        });
+    }
+    return races;
+}
+
+async function fisRaceRows(sector, raceId, ttl) {
+    const html = await fisText(`https://www.fis-ski.com/DB/general/results.html?sectorcode=${sector}&raceid=${raceId}`, ttl);
+    const rows = [];
+    for (const block of html.match(/<a class="table-row[^"]*"[\s\S]*?<\/a>/g) || []) {
+        if (!/athlete-biography/.test(block)) continue;
+        const tokens = htmlTokens(block).filter(token => token !== '-->');
+        const natIndex = tokens.findIndex((token, index) => index > 1 && /^[A-Z]{3}$/.test(token));
+        if (natIndex < 0 || !/^\d+$/.test(tokens[0])) continue;
+        const nameIndex = tokens.findIndex((token, index) => index > 0 && /[A-Za-zÄÖÜäöü]{2}/.test(token) && !/^\d/.test(token));
+        rows.push({ rank: tokens[0], name: tokens[nameIndex] || '', nat: tokens[natIndex], values: tokens.slice(natIndex + 1, natIndex + 8) });
+    }
+    return rows;
+}
+
+async function fisWinterRaces(sport, gender, now) {
+    const season = fisSeasonCode(now);
+    const today = viennaParts(now).iso;
+    const from = addDays(today, -3);
+    const to = addDays(today, 14);
+    const events = (await fisEvents(sport, season)).filter(event => event.end >= from && event.start <= to);
+    const hasToday = events.some(event => event.start <= today && event.end >= today);
+    const lists = await Promise.all(events.map(event => fisEventRaces(sport, season, event, hasToday ? 120000 : 30 * 60000).catch(() => [])));
+    const races = lists.flat().filter(race => race.gender === gender && race.day >= from && race.day <= to);
+    races.sort((a, b) => `${a.day} ${a.time}`.localeCompare(`${b.day} ${b.time}`));
+    const withRows = races.filter(race => race.day <= today).slice(-6);
+    await Promise.all(withRows.map(async race => {
+        const live = race.day === today && race.official < Math.max(race.runs, 1);
+        race.rows = await fisRaceRows(sport, race.raceId, live ? 20000 : 15 * 60000).catch(() => []);
+    }));
+    return races.map(race => ({
+        id: race.id,
+        day: race.day,
+        time: race.time,
+        place: race.place,
+        nation: race.nation,
+        name: race.name,
+        state: fisRaceState(race.official, race.runs, race.day, today, Boolean(race.rows?.length)),
+        rows: (race.rows || []).slice(0, 30)
+    }));
+}
+
+async function ibuJson(path, ttl) {
+    return cachedRemote(`ibu:${path}`, ttl, async () => {
+        const response = await fetch(`${IBU_API}/${path}`, { headers: { 'User-Agent': 'Mozilla/5.0 Familien-Dashboard' }, signal: AbortSignal.timeout(15000) });
+        if (!response.ok) throw new Error(`IBU HTTP ${response.status}`);
+        return response.json();
+    });
+}
+
+function ibuSeasonId(now) {
+    const { year, month } = viennaParts(now);
+    const start = month >= 7 ? year : year - 1;
+    return `${String(start).slice(2)}${String(start + 1).slice(2)}`;
+}
+
+async function ibuWinterRaces(gender, now) {
+    const today = viennaParts(now).iso;
+    const from = addDays(today, -3);
+    const to = addDays(today, 14);
+    const events = (await ibuJson(`Events?SeasonId=${ibuSeasonId(now)}&Level=1`, 6 * 3600 * 1000))
+        .filter(event => String(event.EndDate).slice(0, 10) >= from && String(event.StartDate).slice(0, 10) <= to);
+    const hasToday = events.some(event => String(event.StartDate).slice(0, 10) <= today && String(event.EndDate).slice(0, 10) >= today);
+    const lists = await Promise.all(events.map(async event => {
+        const competitions = await ibuJson(`Competitions?EventId=${encodeURIComponent(event.EventId)}`, hasToday ? 60000 : 30 * 60000).catch(() => []);
+        return competitions.map(competition => ({ ...competition, place: event.ShortDescription }));
+    }));
+    const wanted = gender === 'M' ? ['SM', 'MX'] : ['SW', 'MX'];
+    const races = lists.flat()
+        .filter(race => wanted.includes(race.catId) && race.StartTime)
+        .map(race => ({ race, start: new Date(race.StartTime) }))
+        .filter(({ start }) => !Number.isNaN(start.getTime()) && viennaParts(start).iso >= from && viennaParts(start).iso <= to)
+        .sort((a, b) => a.start - b.start);
+    const candidates = races.filter(({ race, start }) => race.IsLive || start <= now || race.StatusText === 'Final').slice(-6);
+    const rowsById = new Map();
+    await Promise.all(candidates.map(async ({ race }) => {
+        const data = await ibuJson(`Results?RaceId=${encodeURIComponent(race.RaceId)}`, race.IsLive ? 15000 : 15 * 60000).catch(() => null);
+        const rows = (data?.Results || []).filter(row => row.Rank || row.IRM).slice(0, 30).map(row => ({
+            rank: String(row.Rank || row.IRM || ''),
+            name: row.IsTeam ? String(row.Nat || row.Name) : String(row.Name || ''),
+            nat: String(row.Nat || ''),
+            values: [row.Shootings, row.TotalTime || row.Result, row.Behind && row.Behind !== '0.0' ? `+${row.Behind}` : ''].filter(value => value !== null && value !== undefined && value !== '')
+        }));
+        rowsById.set(race.RaceId, rows);
+    }));
+    return races.map(({ race, start }) => {
+        const rows = rowsById.get(race.RaceId) || [];
+        const finished = race.StatusText === 'Final' || race.ScheduleStatus === 'FINISHED' || race.ResultStatus === 'OFFICIAL';
+        return {
+            id: `ibu-${race.RaceId}`,
+            day: viennaParts(start).iso,
+            time: start.toLocaleTimeString('de-AT', { timeZone: 'Europe/Vienna', hour: '2-digit', minute: '2-digit' }),
+            place: race.place,
+            nation: '',
+            name: race.ShortDescription || race.Description,
+            state: race.IsLive ? 'live' : finished ? 'done' : start <= now && rows.length ? 'live' : 'upcoming',
+            viennaTime: true,
+            rows
+        };
+    });
+}
+
+app.get('/api/winter', async (req, res) => {
+    const sport = String(req.query.sport || '');
+    const gender = req.query.gender === 'W' ? 'W' : 'M';
+    if (!WINTER_SPORTS.includes(sport)) return res.status(400).json({ error: 'Unbekannte Sportart.' });
+    try {
+        const now = winterNow();
+        const races = sport === 'BT' ? await ibuWinterRaces(gender, now) : await fisWinterRaces(sport, gender, now);
+        res.set('Cache-Control', 'no-store').json({ sport, gender, today: viennaParts(now).iso, races, updatedAt: new Date().toISOString() });
+    } catch (error) {
+        res.status(502).json({ error: 'Rennen konnten nicht geladen werden.' });
+    }
+});
+
+async function winterStandings(sport, gender, now) {
+    const tryLoad = async offset => {
+        if (sport === 'BT') {
+            const { year, month } = viennaParts(now);
+            const start = (month >= 7 ? year : year - 1) - offset;
+            const season = `${String(start).slice(2)}${String(start + 1).slice(2)}`;
+            const data = await ibuJson(`CupResults?CupId=BT${season}SWRLCP__S${gender}TS`, 10 * 60000);
+            const rows = (data.Rows || []).slice(0, 40).map(row => ({ rank: String(row.Rank), name: String(row.Name), nat: String(row.Nat), points: String(row.Score) }));
+            return { label: `${start}/${String(start + 1).slice(2)}`, info: String(data.CupInfo || ''), rows };
+        }
+        const season = fisSeasonCode(now) - offset;
+        const html = await fisText(`https://www.fis-ski.com/DB/${FIS_SPORTS[sport].slug}/cup-standings.html?sectorcode=${sport}&seasoncode=${season}&cupcode=WC&disciplinecode=ALL&gendercode=${gender}`, 10 * 60000);
+        const rows = [];
+        for (const block of html.match(/<a class="table-row[^"]*"[\s\S]*?<\/a>/g) || []) {
+            const tokens = htmlTokens(block);
+            const overall = tokens.indexOf('ALL');
+            const natIndex = tokens.findIndex((token, index) => index > 0 && /^[A-Z]{3}$/.test(token));
+            if (overall < 0 || natIndex < 0 || !/^\d+$/.test(tokens[overall + 1] || '')) continue;
+            rows.push({ rank: tokens[overall + 1], name: tokens[0], nat: tokens[natIndex], points: tokens[overall + 2] || '' });
+            if (rows.length >= 40) break;
+        }
+        return { label: `${season - 1}/${String(season).slice(2)}`, info: '', rows };
+    };
+    let result = await tryLoad(0).catch(() => ({ rows: [] }));
+    let fallback = false;
+    if (!result.rows.length) {
+        result = await tryLoad(1);
+        fallback = true;
+    }
+    return { sport, gender, season: result.label, fallback, info: result.info, rows: result.rows, updatedAt: new Date().toISOString() };
+}
+
+app.get('/api/winter/standings', async (req, res) => {
+    const sport = String(req.query.sport || '');
+    const gender = req.query.gender === 'W' ? 'W' : 'M';
+    if (!WINTER_SPORTS.includes(sport)) return res.status(400).json({ error: 'Unbekannte Sportart.' });
+    try {
+        res.set('Cache-Control', 'no-store').json(await winterStandings(sport, gender, winterNow()));
+    } catch (error) {
+        res.status(502).json({ error: 'Gesamtstand konnte nicht geladen werden.' });
+    }
+});
+
 const DARTS_LEAGUE_ID = '4554';
 const dartsDayCache = new Map();
 let dartsBlockedUntil = 0;

@@ -5356,7 +5356,11 @@
             { key: 'premier-league', label: 'Premier League', icon: 'fa-flag' },
             { key: 'la-liga', label: 'La Liga', icon: 'fa-flag' },
             { key: 'tennis', label: 'Tennis (Herren)', icon: 'fa-baseball' },
-            { key: 'darts', label: 'Darts', icon: 'fa-bullseye' }
+            { key: 'darts', label: 'Darts', icon: 'fa-bullseye' },
+            { key: 'winter-AL', label: 'Ski Alpin', icon: 'fa-person-skiing' },
+            { key: 'winter-JP', label: 'Skispringen', icon: 'fa-person-skiing' },
+            { key: 'winter-CC', label: 'Langlauf', icon: 'fa-person-skiing-nordic' },
+            { key: 'winter-BT', label: 'Biathlon', icon: 'fa-bullseye' }
         ];
         const footballTab = { league: 'champions-league', view: 'matches', filter: 'upcoming', matches: {}, standings: {}, errors: {}, fetchedAt: {}, inFlight: {} };
 
@@ -5808,6 +5812,7 @@
             const key = footballTab.league;
             if (key === 'darts') return loadDarts(force);
             if (key === 'tennis') return loadTennis(force);
+            if (key.startsWith('winter-')) return loadWinter(force);
             const matches = footballTab.matches[key];
             const isLive = Boolean(matches?.items.some(match => match.status.state === 'in'));
             const age = kind => Date.now() - (footballTab.fetchedAt[`${kind}:${key}`] || 0);
@@ -5926,6 +5931,15 @@
                 segment(footballTab.filter === 'upcoming', 'setFootballTabFilter', 'upcoming', 'Kommende') +
                 segment(footballTab.filter === 'results', 'setFootballTabFilter', 'results', 'Ergebnisse');
 
+            if (key.startsWith('winter-')) {
+                const views = document.getElementById('football-tab-views');
+                views.classList.remove('hidden');
+                views.innerHTML = segment(winterState.view === 'races', 'setWinterView', 'races', 'Rennen') + segment(winterState.view === 'standings', 'setWinterView', 'standings', 'Gesamtstand');
+                filters.classList.remove('hidden');
+                filters.innerHTML = segment(winterState.gender === 'M', 'setWinterGender', 'M', 'Männer') + segment(winterState.gender === 'W', 'setWinterGender', 'W', 'Frauen');
+                renderWinterTab();
+                return;
+            }
             if (key === 'darts' || key === 'tennis') {
                 document.getElementById('football-tab-views').classList.add('hidden');
                 filters.classList.add('hidden');
@@ -5949,6 +5963,107 @@
             content.innerHTML = kind === 'matches'
                 ? `<div class="space-y-1.5">${renderFootballTabMatches(data.items)}</div>`
                 : `<div class="space-y-2">${renderFootballTabStandings(data.groups)}</div>`;
+        }
+
+
+        const winterState = { view: 'races', gender: 'M', races: {}, standings: {}, errors: {}, fetchedAt: {}, loading: {}, open: {} };
+
+        function winterKey() {
+            return `${footballTab.league.slice(7)}:${winterState.gender}`;
+        }
+
+        function setWinterView(view) {
+            winterState.view = view;
+            renderFootballTab();
+            loadWinter();
+        }
+
+        function setWinterGender(gender) {
+            winterState.gender = gender;
+            renderFootballTab();
+            loadWinter();
+        }
+
+        async function loadWinter(force = false) {
+            const key = winterKey();
+            const [sport, gender] = key.split(':');
+            const kind = winterState.view === 'standings' ? 'standings' : 'races';
+            const slot = `${kind}:${key}`;
+            const live = kind === 'races' && winterState.races[key]?.races?.some(race => race.state === 'live');
+            const maxAge = kind === 'standings' ? 10 * 60000 : live ? 20000 : 90000;
+            if (winterState.loading[slot] || (!force && winterState[kind][key] && Date.now() - (winterState.fetchedAt[slot] || 0) < maxAge)) return;
+            winterState.loading[slot] = true;
+            try {
+                const url = kind === 'standings' ? '/api/winter/standings' : '/api/winter';
+                const response = await fetch(`${url}?sport=${sport}&gender=${gender}`, { cache: 'no-store' });
+                const result = await response.json();
+                if (!response.ok) throw new Error(result.error || 'Wintersport-Daten nicht verfügbar.');
+                winterState[kind][key] = result;
+                winterState.errors[slot] = '';
+                winterState.fetchedAt[slot] = Date.now();
+            } catch (error) {
+                winterState.errors[slot] = error.message;
+            } finally {
+                winterState.loading[slot] = false;
+                if (state.currentTab === 'football' && footballTab.league.startsWith('winter-')) renderFootballTab();
+            }
+        }
+
+        function winterRaceHtml(race) {
+            const live = race.state === 'live';
+            const label = live ? '<span class="text-rose-300"><i class="football-live-indicator fa-solid fa-circle mr-1 text-[7px]"></i>Zwischenstand</span>'
+                : race.state === 'done' ? '<span class="text-emerald-300">Endergebnis</span>' : '<span class="text-slate-300">Geplant</span>';
+            const day = new Date(`${race.day}T12:00:00`).toLocaleDateString('de-AT', { weekday: 'short', day: '2-digit', month: '2-digit' });
+            const open = winterState.open[race.id] ?? live;
+            const rows = open && race.rows.length ? `<div class="mt-2 space-y-0.5 text-xs">${race.rows.map(row => `
+                <div class="flex items-center gap-2 rounded-lg px-1.5 py-1 odd:bg-slate-900/60">
+                    <span class="w-6 shrink-0 text-right font-bold tabular-nums text-amber-300">${escapeHtml(row.rank)}</span>
+                    <span class="min-w-0 flex-1 truncate font-semibold text-slate-100">${escapeHtml(row.name)}</span>
+                    <span class="shrink-0 text-[10px] text-slate-400">${escapeHtml(row.nat)}</span>
+                    <span class="hidden shrink-0 tabular-nums text-slate-300 sm:inline">${escapeHtml(row.values.slice(0, 4).join(' · '))}</span>
+                </div>`).join('')}</div>` : '';
+            const hint = open || !race.rows.length ? '' : `<span class="text-[10px] text-slate-500">${race.rows.length} Platzierungen ▾</span>`;
+            const clickable = race.rows.length ? `onclick="winterState.open['${race.id}'] = !(winterState.open['${race.id}'] ?? ${live}); renderFootballTab()"` : '';
+            return `<div class="rounded-xl border ${live ? 'border-rose-400/40 bg-rose-950/20' : 'border-indigo-500/15 bg-slate-950/60'} px-3 py-2.5">
+                <button type="button" ${clickable} class="flex w-full items-start justify-between gap-2 text-left">
+                    <span class="min-w-0"><span class="block truncate text-sm font-bold text-slate-100">${escapeHtml(race.name)}</span>
+                    <span class="block truncate text-[11px] text-slate-400">${escapeHtml(race.place)} · ${escapeHtml(day)} ${escapeHtml(race.time)}${race.viennaTime ? '' : ' (Ortszeit)'}</span></span>
+                    <span class="flex shrink-0 flex-col items-end gap-0.5 text-[10px] font-semibold">${label}${hint}</span>
+                </button>${rows}</div>`;
+        }
+
+        function renderWinterTab() {
+            const content = document.getElementById('football-tab-content');
+            const status = document.getElementById('football-tab-updated');
+            const key = winterKey();
+            const kind = winterState.view === 'standings' ? 'standings' : 'races';
+            const data = winterState[kind][key];
+            const error = winterState.errors[`${kind}:${key}`];
+            const box = text => `<p class="rounded-xl border border-indigo-500/15 bg-slate-950/60 px-4 py-6 text-center text-xs text-slate-400">${escapeHtml(text)}</p>`;
+            if (!data) {
+                status.textContent = error ? `Fehler: ${error}` : 'Lade Daten …';
+                content.innerHTML = box(error ? 'Wintersport-Daten sind gerade nicht verfügbar.' : 'Daten werden geladen …');
+                return;
+            }
+            const time = data.updatedAt ? new Date(data.updatedAt).toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' }) : '';
+            if (kind === 'standings') {
+                status.textContent = `Gesamtstand ${data.season}${time ? ` · Stand ${time}` : ''}`;
+                const note = data.fallback ? `<p class="rounded-xl border border-amber-400/30 bg-amber-950/20 px-3 py-2 text-[11px] text-amber-200">Die neue Saison hat noch keine Wertung – angezeigt wird die Saison ${escapeHtml(data.season)}.</p>` : '';
+                content.innerHTML = `<div class="space-y-2">${note}${data.rows.length ? `<div class="space-y-0.5">${data.rows.map(row => `
+                    <div class="flex items-center gap-2 rounded-lg border border-indigo-500/10 bg-slate-950/60 px-2.5 py-1.5 text-sm">
+                        <span class="w-7 shrink-0 text-right font-bold tabular-nums text-amber-300">${escapeHtml(row.rank)}</span>
+                        <span class="min-w-0 flex-1 truncate font-semibold text-slate-100">${escapeHtml(row.name)}</span>
+                        <span class="shrink-0 text-[10px] text-slate-400">${escapeHtml(row.nat)}</span>
+                        <span class="w-14 shrink-0 text-right font-bold tabular-nums text-slate-100">${escapeHtml(row.points)}</span>
+                    </div>`).join('')}</div>` : box('Noch keine Gesamtwertung vorhanden.')}</div>`;
+                return;
+            }
+            status.textContent = `Stand ${time}${data.races.some(race => race.state === 'live') ? ' · Live' : ''}`;
+            const order = { live: 0, upcoming: 1, done: 2 };
+            const races = [...data.races].sort((a, b) => order[a.state] - order[b.state] || (a.state === 'done' ? `${b.day} ${b.time}`.localeCompare(`${a.day} ${a.time}`) : `${a.day} ${a.time}`.localeCompare(`${b.day} ${b.time}`)));
+            content.innerHTML = races.length
+                ? `<div class="space-y-2">${races.map(winterRaceHtml).join('')}<p class="text-[10px] text-slate-500">Quellen: FIS / IBU. Zwischenstände erscheinen so aktuell, wie die Veranstalter sie veröffentlichen.</p></div>`
+                : box('In den nächsten 2 Wochen sind keine Rennen angesetzt. Unter „Gesamtstand“ siehst du die Weltcup-Wertung.');
         }
 
 
