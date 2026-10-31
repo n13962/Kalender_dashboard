@@ -931,7 +931,14 @@
                         <div id="nav-item-football">
                             <button onclick="switchTab('football')" id="nav-btn-football" class="w-full flex items-center space-x-2.5 px-3 py-2 rounded-xl text-xs font-medium text-slate-300 hover:bg-slate-800/80 transition-all">
                                 <i class="fa-solid fa-futbol w-4 text-center text-emerald-400"></i>
-                                <span>Fußball</span>
+                                <span>Sport</span>
+                            </button>
+                        </div>
+                        <div id="nav-item-news">
+                            <button onclick="switchTab('news')" id="nav-btn-news" class="w-full flex items-center space-x-2.5 px-3 py-2 rounded-xl text-xs font-medium text-slate-300 hover:bg-slate-800/80 transition-all">
+                                <i class="fa-solid fa-newspaper w-4 text-center text-emerald-400"></i>
+                                <span>News</span>
+                                <span id="nav-news-badge" class="ml-auto hidden rounded-full border border-red-400/50 bg-red-950 px-1.5 text-[10px] font-semibold text-red-300">0</span>
                             </button>
                         </div>
                         <div id="nav-item-offers">
@@ -1320,7 +1327,7 @@
                         <div class="flex min-w-0 items-center gap-3">
                             <i class="fa-solid fa-futbol text-emerald-400 text-lg"></i>
                             <div class="min-w-0">
-                                <h2 class="text-lg font-bold text-slate-100">Fußball</h2>
+                                <h2 class="text-lg font-bold text-slate-100">Sport</h2>
                                 <p id="football-tab-updated" class="truncate text-[11px] text-slate-400">Lade Daten …</p>
                             </div>
                         </div>
@@ -1332,6 +1339,23 @@
                         <div id="football-tab-filters" class="inline-flex rounded-xl border border-indigo-500/20 bg-slate-950 p-1"></div>
                     </div>
                     <div id="football-tab-content" aria-live="polite"></div>
+                </div>
+
+                <div id="tab-news" class="tab-content hidden space-y-3 rounded-2xl border border-indigo-500/30 bg-slate-900/80 p-4 shadow-sm">
+                    <div class="flex items-center justify-between gap-3 border-b border-indigo-500/20 pb-3">
+                        <div class="flex min-w-0 items-center gap-3">
+                            <i class="fa-solid fa-newspaper text-emerald-400 text-lg"></i>
+                            <div class="min-w-0">
+                                <h2 class="text-lg font-bold text-slate-100">News</h2>
+                                <p id="news-updated" class="truncate text-[11px] text-slate-400">Lade Nachrichten …</p>
+                            </div>
+                        </div>
+                        <button type="button" onclick="loadNews(true)" aria-label="News aktualisieren" title="Aktualisieren" class="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border border-emerald-400/20 bg-slate-950 text-emerald-200 hover:bg-slate-800"><i id="news-refresh-icon" class="fa-solid fa-rotate"></i></button>
+                    </div>
+                    <div id="news-breaking"></div>
+                    <div id="news-scopes" class="flex gap-2 overflow-x-auto pb-1" role="tablist" aria-label="News-Bereich"></div>
+                    <div id="news-list" class="space-y-2" aria-live="polite"></div>
+                    <p id="news-sources" class="text-[10px] text-slate-500"></p>
                 </div>
 
                 <div id="tab-offers" class="tab-content hidden space-y-3 rounded-2xl border border-indigo-500/30 bg-slate-900/80 p-4 shadow-sm">
@@ -4699,7 +4723,7 @@
         function switchTab(tabId) {
             state.currentTab = tabId;
             document.getElementById('app-body')?.classList.toggle('mobile-settings-open', tabId === 'settings');
-            ['dashboard', 'calendar', 'meals', 'tasks', 'shopping', 'football', 'offers', 'fire', 'cameras', 'smart-home', 'family', 'settings'].forEach(t => {
+            ['dashboard', 'calendar', 'meals', 'tasks', 'shopping', 'football', 'news', 'offers', 'fire', 'cameras', 'smart-home', 'family', 'settings'].forEach(t => {
                 const contentEl = document.getElementById(`tab-${t}`);
                 const btnEl = document.getElementById(`nav-btn-${t}`);
                 if (contentEl) {
@@ -4729,6 +4753,7 @@
             if (tabId === 'family') renderFamilyTab();
             if (tabId === 'football') openFootballTab();
             if (tabId === 'fire') renderFireTab();
+            if (tabId === 'news') openNewsTab();
             if (tabId === 'offers') loadOffers();
             if (tabId === 'cameras') startCameraTab(); else stopCameraTab();
             if (tabId === 'calendar') {
@@ -5318,7 +5343,8 @@
             { key: 'bundesliga-at', label: 'Bundesliga Österreich', icon: 'fa-flag' },
             { key: 'bundesliga-de', label: 'Bundesliga Deutschland', icon: 'fa-flag' },
             { key: 'premier-league', label: 'Premier League', icon: 'fa-flag' },
-            { key: 'la-liga', label: 'La Liga', icon: 'fa-flag' }
+            { key: 'la-liga', label: 'La Liga', icon: 'fa-flag' },
+            { key: 'darts', label: 'Darts', icon: 'fa-bullseye' }
         ];
         const footballTab = { league: 'champions-league', view: 'matches', filter: 'upcoming', matches: {}, standings: {}, errors: {}, fetchedAt: {}, inFlight: {} };
 
@@ -5746,6 +5772,7 @@
 
         async function refreshFootballTab(force = false) {
             const key = footballTab.league;
+            if (key === 'darts') return loadDarts(force);
             const matches = footballTab.matches[key];
             const isLive = Boolean(matches?.items.some(match => match.status.state === 'in'));
             const age = kind => Date.now() - (footballTab.fetchedAt[`${kind}:${key}`] || 0);
@@ -5864,6 +5891,13 @@
                 segment(footballTab.filter === 'upcoming', 'setFootballTabFilter', 'upcoming', 'Kommende') +
                 segment(footballTab.filter === 'results', 'setFootballTabFilter', 'results', 'Ergebnisse');
 
+            if (key === 'darts') {
+                document.getElementById('football-tab-views').classList.add('hidden');
+                filters.classList.add('hidden');
+                renderDartsTab();
+                return;
+            }
+            document.getElementById('football-tab-views').classList.remove('hidden');
             const kind = footballTab.view === 'table' ? 'standings' : 'matches';
             const data = footballTab[kind][key];
             const error = footballTab.errors[`${kind}:${key}`];
@@ -5881,6 +5915,169 @@
                 ? `<div class="space-y-1.5">${renderFootballTabMatches(data.items)}</div>`
                 : `<div class="space-y-2">${renderFootballTabStandings(data.groups)}</div>`;
         }
+
+
+        const dartsState = { data: null, error: '', loading: false, fetchedAt: 0 };
+
+        async function loadDarts(force = false) {
+            if (dartsState.loading || (!force && dartsState.data && Date.now() - dartsState.fetchedAt < 60000)) return;
+            dartsState.loading = true;
+            try {
+                const response = await fetch('/api/darts');
+                const result = await response.json();
+                if (!response.ok) throw new Error(result.error || 'Darts-Daten nicht verfügbar.');
+                dartsState.data = result;
+                dartsState.error = '';
+                dartsState.fetchedAt = Date.now();
+            } catch (error) {
+                dartsState.error = error.message;
+            } finally {
+                dartsState.loading = false;
+                if (state.currentTab === 'football' && footballTab.league === 'darts') renderFootballTab();
+            }
+        }
+
+        function dartsDateLabel(day) {
+            const date = new Date(`${day}T12:00:00`);
+            return Number.isNaN(date.getTime()) ? day : date.toLocaleDateString('de-AT', { weekday: 'short', day: '2-digit', month: '2-digit' });
+        }
+
+        function dartsResultHtml(result) {
+            const lines = String(result || '').split(/\r?\n/).map(line => line.trim()).filter(Boolean);
+            if (!lines.length) return '';
+            return `<div class="mt-2 space-y-0.5 text-[11px] text-slate-300">${lines.map(line => /\d+\s*[-–]\s*\d+/.test(line)
+                ? `<div class="tabular-nums">${escapeHtml(line)}</div>`
+                : `<div class="pt-1.5 text-[10px] font-bold uppercase tracking-wide text-amber-300">${escapeHtml(line)}</div>`).join('')}</div>`;
+        }
+
+        function dartsEventHtml(event, mode) {
+            const live = mode === 'live';
+            const finished = event.status === 'FT' || mode === 'results';
+            const badge = live && !finished
+                ? '<span class="rounded-full border border-rose-400/50 bg-rose-950 px-2 py-0.5 text-[10px] font-bold text-rose-300"><i class="football-live-indicator fa-solid fa-circle mr-1 text-[7px]"></i>Heute</span>'
+                : finished ? '<span class="rounded-full border border-slate-500/40 px-2 py-0.5 text-[10px] font-semibold text-slate-400">Beendet</span>' : '';
+            const hasDetails = event.result || event.summary;
+            const body = hasDetails ? `<details class="mt-1"><summary class="cursor-pointer text-[11px] font-semibold text-emerald-300">Ergebnisse anzeigen</summary>${event.summary ? `<p class="mt-2 text-[11px] leading-relaxed text-slate-300">${escapeHtml(event.summary.split(/\r?\n/).filter(Boolean).slice(0, 4).join(' '))}</p>` : ''}${dartsResultHtml(event.result)}</details>` : '';
+            return `<div class="rounded-xl border ${live && !finished ? 'border-rose-400/40 bg-rose-950/20' : 'border-indigo-500/15 bg-slate-950/60'} px-3 py-2.5">
+                <div class="flex items-start justify-between gap-2">
+                    <div class="min-w-0"><p class="text-sm font-bold text-slate-100">${escapeHtml(event.name)}</p><p class="text-[11px] text-slate-400">${escapeHtml(dartsDateLabel(event.date))}${event.venue ? ` · ${escapeHtml(event.venue)}` : ''}</p></div>
+                    ${badge}
+                </div>${body}</div>`;
+        }
+
+        function renderDartsTab() {
+            const content = document.getElementById('football-tab-content');
+            const status = document.getElementById('football-tab-updated');
+            const data = dartsState.data;
+            if (!data) {
+                status.textContent = dartsState.error ? `Fehler: ${dartsState.error}` : 'Lade Daten …';
+                content.innerHTML = `<p class="rounded-xl border border-indigo-500/15 bg-slate-950/60 px-4 py-6 text-center text-xs text-slate-400">${escapeHtml(dartsState.error ? 'Darts-Daten sind gerade nicht verfügbar.' : 'Darts-Daten werden geladen …')}</p>`;
+                return;
+            }
+            const updated = new Date(data.updatedAt);
+            status.textContent = `PDC Darts · Stand ${updated.toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' })}${data.partial ? ' · unvollständig' : ''}`;
+            const section = (title, items, mode, empty) => `<div class="space-y-1.5"><h3 class="text-xs font-bold uppercase tracking-wide text-slate-400">${title}</h3>${items.length ? items.map(event => dartsEventHtml(event, mode)).join('') : `<p class="rounded-xl border border-indigo-500/15 bg-slate-950/60 px-3 py-3 text-xs text-slate-400">${empty}</p>`}</div>`;
+            content.innerHTML = `<div class="space-y-4">
+                ${section('Heute', data.live, 'live', 'Heute sind keine Profi-Turniere angesetzt.')}
+                ${section('Kommende Turniere', data.upcoming.slice(0, 15), 'upcoming', 'Keine Turniere in den nächsten Wochen gefunden.')}
+                ${section('Letzte Ergebnisse', data.results.slice(0, 10), 'results', 'Keine Ergebnisse gefunden.')}
+                <p class="text-[10px] text-slate-500">Quelle: TheSportsDB (PDC). Spielergebnisse einzelner Matches erscheinen, sobald sie dort eingetragen sind – nicht sekundengenau live.</p>
+            </div>`;
+        }
+
+        const newsState = { data: null, scope: 'gmuend', loading: false, error: '', fetchedAt: 0 };
+        const NEWS_SCOPES = [
+            { key: 'gmuend', label: '★ Gmünd' },
+            { key: 'region', label: 'Niederösterreich' },
+            { key: 'austria', label: 'Österreich' },
+            { key: 'world', label: 'Welt' }
+        ];
+
+        function newsTimeLabel(iso) {
+            const date = new Date(iso);
+            if (Number.isNaN(date.getTime())) return '';
+            const minutes = Math.round((Date.now() - date.getTime()) / 60000);
+            if (minutes < 1) return 'gerade eben';
+            if (minutes < 60) return `vor ${minutes} Min.`;
+            if (minutes < 24 * 60) return `vor ${Math.round(minutes / 60)} Std.`;
+            return date.toLocaleDateString('de-AT', { day: '2-digit', month: '2-digit' }) + ' ' + date.toLocaleTimeString('de-AT', { hour: '2-digit', minute: '2-digit' });
+        }
+
+        function newsItemHtml(item) {
+            const image = item.image ? `<img src="${escapeHtml(item.image)}" alt="" loading="lazy" referrerpolicy="no-referrer" class="h-16 w-20 shrink-0 rounded-lg object-cover" onerror="this.remove()">` : '';
+            return `<a href="${escapeHtml(item.url)}" target="_blank" rel="noopener noreferrer" class="flex gap-3 rounded-xl border border-indigo-500/15 bg-slate-950/60 p-3 hover:border-emerald-400/40">
+                ${image}
+                <div class="min-w-0 flex-1">
+                    <div class="flex flex-wrap items-center gap-x-2 text-[10px] text-slate-400"><span class="font-bold text-emerald-300">${escapeHtml(item.source)}</span>${item.lang === 'en' ? '<span class="rounded border border-slate-600 px-1">EN</span>' : ''}<span>${escapeHtml(newsTimeLabel(item.publishedAt))}</span></div>
+                    <p class="mt-0.5 text-sm font-semibold leading-snug text-slate-100">${escapeHtml(item.title)}</p>
+                    ${item.description ? `<p class="mt-0.5 line-clamp-2 text-[11px] text-slate-400">${escapeHtml(item.description)}</p>` : ''}
+                </div></a>`;
+        }
+
+        function renderNewsTab() {
+            const data = newsState.data;
+            const scopes = document.getElementById('news-scopes');
+            if (!scopes) return;
+            scopes.innerHTML = NEWS_SCOPES.map(scope => `<button type="button" role="tab" aria-selected="${scope.key === newsState.scope}" onclick="setNewsScope('${scope.key}')" class="flex min-h-10 shrink-0 items-center rounded-xl border px-3 text-xs font-semibold ${scope.key === newsState.scope ? 'bg-amber-500/20 text-amber-300 border-amber-500/40' : 'bg-slate-950 text-slate-300 border-indigo-500/20 hover:bg-slate-800'}">${scope.label}${data ? ` <span class="ml-1.5 text-[10px] opacity-70">${data[scope.key]?.length || 0}</span>` : ''}</button>`).join('');
+            const list = document.getElementById('news-list');
+            const updated = document.getElementById('news-updated');
+            if (!data) {
+                updated.textContent = newsState.error ? `Fehler: ${newsState.error}` : 'Lade Nachrichten …';
+                list.innerHTML = `<p class="rounded-xl border border-indigo-500/15 bg-slate-950/60 px-4 py-6 text-center text-xs text-slate-400">${escapeHtml(newsState.error || 'Nachrichten werden geladen …')}</p>`;
+                return;
+            }
+            updated.textContent = `Stand ${new Date(data.updatedAt).toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' })}`;
+            const breaking = document.getElementById('news-breaking');
+            breaking.innerHTML = data.breaking.length ? `<div class="rounded-xl border border-red-500/50 bg-red-950/40 p-3">
+                <h3 class="mb-2 flex items-center gap-2 text-xs font-bold uppercase tracking-wide text-red-300"><i class="fa-solid fa-triangle-exclamation"></i> Eilmeldungen</h3>
+                <div class="space-y-2">${data.breaking.map(item => `<a href="${escapeHtml(item.url)}" target="_blank" rel="noopener noreferrer" class="block rounded-lg bg-slate-950/70 px-3 py-2 hover:bg-slate-900"><div class="text-[10px] text-red-200/80">${item.level === 'eil' ? '<b>EILMELDUNG</b> · ' : ''}${escapeHtml(item.source)} · ${escapeHtml(newsTimeLabel(item.publishedAt))}</div><p class="text-sm font-semibold text-slate-100">${escapeHtml(item.title)}</p></a>`).join('')}</div></div>` : '';
+            const items = data[newsState.scope] || [];
+            list.innerHTML = items.length ? items.map(newsItemHtml).join('') : '<p class="rounded-xl border border-indigo-500/15 bg-slate-950/60 px-4 py-6 text-center text-xs text-slate-400">Keine aktuellen Meldungen.</p>';
+            document.getElementById('news-sources').textContent = 'Quellen: ' + data.sources.map(source => `${source.name}${source.ok ? '' : ' (nicht erreichbar)'}`).join(' · ');
+        }
+
+        function updateNewsBadge() {
+            const badge = document.getElementById('nav-news-badge');
+            const count = newsState.data?.breaking?.length || 0;
+            if (badge) {
+                badge.textContent = String(count);
+                badge.classList.toggle('hidden', !count);
+            }
+        }
+
+        async function loadNews(force = false) {
+            if (newsState.loading || (!force && newsState.data && Date.now() - newsState.fetchedAt < 60000)) return;
+            newsState.loading = true;
+            document.getElementById('news-refresh-icon')?.classList.add('fa-spin');
+            try {
+                const response = await fetch(`/api/news${force ? '?refresh=1' : ''}`);
+                const result = await response.json();
+                if (!response.ok) throw new Error(result.error || 'Nachrichten nicht verfügbar.');
+                newsState.data = result;
+                newsState.error = '';
+                newsState.fetchedAt = Date.now();
+            } catch (error) {
+                newsState.error = error.message;
+            } finally {
+                newsState.loading = false;
+                document.getElementById('news-refresh-icon')?.classList.remove('fa-spin');
+                updateNewsBadge();
+                if (state.currentTab === 'news') renderNewsTab();
+            }
+        }
+
+        function setNewsScope(key) {
+            newsState.scope = key;
+            renderNewsTab();
+        }
+
+        function openNewsTab() {
+            renderNewsTab();
+            loadNews(false);
+        }
+
+        setTimeout(() => loadNews(false), 8000);
+        setInterval(() => loadNews(true), 5 * 60 * 1000);
 
         const cameraState = { cameras: [], events: [], live: new Set(), tick: 0, timer: null, eventsTimer: null, loading: false, error: '', haConfigured: false, busy: new Set(), failed: new Set() };
 

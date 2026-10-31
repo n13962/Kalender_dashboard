@@ -494,6 +494,178 @@ async function fetchOrfNoeUpdates() {
     return parseOrfNoeFeed(xml);
 }
 
+const NEWS_SOURCES = [
+    { id: 'orf-noe', name: 'ORF NÖ', url: 'https://rss.orf.at/noe.xml', scope: 'region', hosts: ['orf.at'] },
+    { id: 'meinbezirk', name: 'MeinBezirk Gmünd', url: 'https://www.meinbezirk.at/gmuend/rss', scope: 'gmuend', hosts: ['meinbezirk.at'] },
+    { id: 'orf', name: 'ORF', url: 'https://rss.orf.at/news.xml', scope: 'austria', hosts: ['orf.at'] },
+    { id: 'standard', name: 'Der Standard', url: 'https://www.derstandard.at/rss', scope: 'austria', hosts: ['derstandard.at'] },
+    { id: 'krone', name: 'Krone', url: 'https://www.krone.at/nachrichten/rss.html', scope: 'austria', hosts: ['krone.at'] },
+    { id: 'tagesschau', name: 'Tagesschau', url: 'https://www.tagesschau.de/infoservice/alle-meldungen-100~rss2.xml', scope: 'world', hosts: ['tagesschau.de'] },
+    { id: 'bbc', name: 'BBC World', url: 'https://feeds.bbci.co.uk/news/world/rss.xml', scope: 'world', hosts: ['bbc.com', 'bbc.co.uk'], lang: 'en' },
+    { id: 'aljazeera', name: 'Al Jazeera', url: 'https://www.aljazeera.com/xml/rss/all.xml', scope: 'world', hosts: ['aljazeera.com'], lang: 'en' }
+];
+const NEWS_CACHE_MS = 3 * 60 * 1000;
+const newsCache = new Map();
+let newsInFlight = null;
+
+function parseNewsFeed(xml, source) {
+    const stripText = value => decodeFeedText(decodeFeedText(value));
+    return [...xml.matchAll(/<item\b[^>]*>([\s\S]*?)<\/item>/gi)].map(([, item]) => {
+        const link = getFeedTag(item, 'link') || (item.match(/<link\b[^>]*href="([^"]+)"/i) || [])[1] || '';
+        let url = '';
+        try {
+            const parsed = new URL(link.trim());
+            if (parsed.protocol === 'https:' && source.hosts.some(host => parsed.hostname === host || parsed.hostname.endsWith(`.${host}`))) url = parsed.toString();
+        } catch (error) {}
+        const date = new Date(getFeedTag(item, 'pubDate') || getFeedTag(item, 'dc:date') || getFeedTag(item, 'updated'));
+        const imageMatch = item.match(/<(?:media:thumbnail|media:content|enclosure)\b[^>]*\burl="(https:\/\/[^"]+)"/i);
+        return {
+            title: stripText(getFeedTag(item, 'title')),
+            description: stripText(getFeedTag(item, 'description')).slice(0, 300),
+            url,
+            image: imageMatch ? imageMatch[1] : '',
+            publishedAt: Number.isNaN(date.getTime()) ? '' : date.toISOString(),
+            source: source.name,
+            sourceId: source.id,
+            scope: source.scope,
+            lang: source.lang || 'de'
+        };
+    }).filter(item => item.title && item.url);
+}
+
+async function fetchNewsSource(source) {
+    const cached = newsCache.get(source.id);
+    if (cached && Date.now() - cached.at < NEWS_CACHE_MS) return cached.items;
+    try {
+        const response = await fetch(source.url, {
+            headers: { 'User-Agent': 'Mozilla/5.0 Familien-Dashboard', Accept: 'application/rss+xml, application/xml, text/xml' },
+            signal: AbortSignal.timeout(10000)
+        });
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        const xml = await response.text();
+        if (xml.length > 3 * 1024 * 1024) throw new Error('Feed zu groß');
+        const items = parseNewsFeed(xml, source);
+        newsCache.set(source.id, { at: Date.now(), items, error: '' });
+        return items;
+    } catch (error) {
+        newsCache.set(source.id, { at: cached ? cached.at : 0, items: cached ? cached.items : [], error: error.message });
+        return cached ? cached.items : [];
+    }
+}
+
+const BREAKING_MARKER = /eilmeldung|breaking( news)?|\+\+\+|just in\b/i;
+const BREAKING_STRONG = /(anschlag|terror|attentat|amoklauf|geiselnahme|erdbeben|tsunami|explosion|flugzeugabsturz|putsch|ausnahmezustand|raketenangriff|luftangriff|grossbrand|großbrand|atomunfall|schüsse|earthquake|tsunami|explosion|terror attack|shooting|plane crash|coup|missile strike|air strike|airstrike|assassinat|state of emergency|hostage)/i;
+
+function classifyBreaking(item) {
+    const text = `${item.title} ${item.description}`;
+    if (BREAKING_MARKER.test(item.title)) return 'eil';
+    if (item.scope === 'world' || item.scope === 'austria') return BREAKING_STRONG.test(item.title) ? 'wichtig' : '';
+    return '';
+}
+
+async function loadNews() {
+    const lists = await Promise.all(NEWS_SOURCES.map(fetchNewsSource));
+    const all = lists.flat().sort((a, b) => (Date.parse(b.publishedAt) || 0) - (Date.parse(a.publishedAt) || 0));
+    const seen = new Set();
+    const unique = all.filter(item => {
+        const key = item.url.replace(/[?#].*$/, '');
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+    });
+    const gmuend = unique.filter(item => item.scope === 'gmuend' || (item.scope === 'region' ? isGmuendDistrictFeedItem(`${item.title} ${item.description}`) : item.scope === 'austria' && isGmuendDistrictFeedItem(`${item.title} ${item.description}`)))
+        .map(item => ({ ...item, favorite: true }));
+    const region = unique.filter(item => item.scope === 'region');
+    const austria = unique.filter(item => item.scope === 'austria' || item.scope === 'region' || item.scope === 'gmuend');
+    const world = unique.filter(item => item.scope === 'world' || item.sourceId === 'orf');
+    const cutoff = Date.now() - 12 * 3600 * 1000;
+    const breaking = unique
+        .map(item => ({ item, level: classifyBreaking(item) }))
+        .filter(entry => entry.level && (Date.parse(entry.item.publishedAt) || 0) >= cutoff)
+        .map(entry => ({ ...entry.item, level: entry.level }))
+        .sort((a, b) => (a.level === b.level ? 0 : a.level === 'eil' ? -1 : 1))
+        .slice(0, 8);
+    return {
+        gmuend: gmuend.slice(0, 40),
+        region: region.slice(0, 40),
+        austria: austria.slice(0, 60),
+        world: world.slice(0, 60),
+        breaking,
+        sources: NEWS_SOURCES.map(source => ({ id: source.id, name: source.name, ok: !newsCache.get(source.id)?.error, count: newsCache.get(source.id)?.items.length || 0 })),
+        updatedAt: new Date().toISOString()
+    };
+}
+
+app.get('/api/news', async (req, res) => {
+    try {
+        if (req.query.refresh === '1') newsCache.clear();
+        newsInFlight ||= loadNews().finally(() => { newsInFlight = null; });
+        res.set('Cache-Control', 'no-store').json(await newsInFlight);
+    } catch (error) {
+        res.status(502).json({ error: 'Nachrichten konnten nicht geladen werden.' });
+    }
+});
+
+const DARTS_LEAGUE_ID = '4554';
+const dartsDayCache = new Map();
+let dartsBlockedUntil = 0;
+
+async function fetchDartsDay(day, ttl) {
+    const cached = dartsDayCache.get(day);
+    if (cached && Date.now() - cached.at < ttl) return cached.events;
+    if (Date.now() < dartsBlockedUntil) return cached ? cached.events : null;
+    try {
+        const response = await fetch(`https://www.thesportsdb.com/api/v1/json/123/eventsday.php?d=${day}&s=Darts`, { signal: AbortSignal.timeout(10000) });
+        if (response.status === 429) dartsBlockedUntil = Date.now() + 65000;
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        const data = await response.json();
+        const events = (data.events || []).map(event => ({
+            id: event.idEvent,
+            name: event.strEvent,
+            league: event.strLeague,
+            date: event.dateEvent,
+            venue: [event.strVenue, event.strCity, event.strCountry].filter(Boolean).join(', '),
+            status: event.strStatus || '',
+            result: event.strResult ? String(event.strResult).slice(0, 3000) : '',
+            summary: event.strDescriptionEN ? String(event.strDescriptionEN).slice(0, 1200) : ''
+        }));
+        dartsDayCache.set(day, { at: Date.now(), events });
+        return events;
+    } catch (error) {
+        return cached ? cached.events : null;
+    }
+}
+
+app.get('/api/darts', async (req, res) => {
+    try {
+        const today = new Date();
+        const dayStr = offset => new Date(today.getTime() + offset * 86400000).toLocaleDateString('sv-SE', { timeZone: 'Europe/Vienna' });
+        const todayStr = dayStr(0);
+        const offsets = Array.from({ length: 21 }, (_, index) => index - 4);
+        const out = [];
+        let missing = 0;
+        for (let i = 0; i < offsets.length; i += 7) {
+            const chunk = await Promise.all(offsets.slice(i, i + 7).map(offset => {
+                const day = dayStr(offset);
+                return fetchDartsDay(day, day === todayStr ? 2 * 60 * 1000 : 6 * 3600 * 1000);
+            }));
+            missing += chunk.filter(events => events === null).length;
+            out.push(...chunk.flat().filter(Boolean));
+        }
+        const events = out.sort((a, b) => a.date.localeCompare(b.date));
+        res.set('Cache-Control', 'no-store').json({
+            today: todayStr,
+            live: events.filter(event => event.date === todayStr),
+            upcoming: events.filter(event => event.date > todayStr),
+            results: events.filter(event => event.date < todayStr).reverse(),
+            partial: missing > 0,
+            updatedAt: new Date().toISOString()
+        });
+    } catch (error) {
+        res.status(502).json({ error: 'Darts-Daten konnten nicht geladen werden.' });
+    }
+});
+
 // WLAN-Name des Servers (Browser dürfen den Netzwerknamen nicht auslesen)
 const { execFile } = require('child_process');
 let networkNameCache = { name: '', at: 0 };
