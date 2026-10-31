@@ -709,20 +709,29 @@ function xmlValue(block, tag) {
     return match ? (match[1] ?? match[2] ?? '') : '';
 }
 
+// Die drei Alarmzentralen 061-063 liefern identische Listen; die Feuerwehr-ID verrät den Bezirk.
+const FIRE_AAZ_CODES = new Set(['061', '062', '063']);
+function fireAazOwner(id) {
+    if (id.startsWith('17')) return '062';
+    if (id.startsWith('19')) return '061';
+    if (id.startsWith('3')) return '063';
+    return null;
+}
+
 function parseFireFeed(xml, district) {
     const stations = [...xml.matchAll(/<aFFNr[^>]*>([\s\S]*?)<\/aFFNr>/g)].map(match => {
         const block = match[1];
         const button = xmlValue(block, 'Button').toLowerCase();
         const lines = xmlValue(block, 'Title').split(/\r?\n/).map(line => line.trim()).filter(Boolean);
-        const status = button.includes('red') ? 'red' : button.includes('orange') || button.includes('yellow') ? 'orange' : button.includes('green') ? 'green' : 'other';
-        const first = (lines[0] || '').replace(/\s+einsatzbereit!?$/i, '');
+        const status = button.includes('red') ? 'red' : button.includes('orange') || button.includes('yellow') ? 'orange' : button.includes('green') ? 'green' : /darkblue|ausgerückt/i.test(button + (lines[0] || '')) ? 'out' : 'other';
+        const first = (lines[0] || '').replace(/\s+einsatzbereit!?$/i, '').replace(/:\s*Status\b.*$/i, '');
         return {
             id: xmlValue(block, 'FFNr').trim(),
             name: first || `FF ${xmlValue(block, 'FFNr').trim()}`,
             status,
-            info: status === 'green' ? [] : lines.slice(1)
+            info: status === 'green' ? [] : status === 'out' ? ['Aktiv / ausgerückt'] : lines.slice(1)
         };
-    }).filter(station => station.id);
+    }).filter(station => station.id && (!FIRE_AAZ_CODES.has(district) || fireAazOwner(station.id) === district));
     const bazBlock = [...xml.matchAll(/<aBAZID[^>]*>([\s\S]*?)<\/aBAZID>/g)].map(match => match[1]).find(block => xmlValue(block, 'cBezirk').trim() === district);
     const summary = bazBlock ? {
         name: xmlValue(bazBlock, 'cFriendlyName').trim(),
@@ -767,11 +776,11 @@ async function refreshFireData(district) {
     fireState.error = null;
 }
 
-function ensureFireData(district, force = false) {
+function ensureFireData(district, force = false, maxAge = 5000) {
     const fireState = getFireState(district);
     if (fireState.pending) return fireState.pending;
     if (force) fireState.lastFetch = 0;
-    if (Date.now() - fireState.lastFetch < 5000) return Promise.resolve();
+    if (Date.now() - fireState.lastFetch < maxAge) return Promise.resolve();
     fireState.lastFetch = Date.now();
     fireState.pending = refreshFireData(district)
         .catch(error => { fireState.error = error.message; })
@@ -796,34 +805,40 @@ app.get('/api/fire/districts', (req, res) => {
     res.json({ defaultDistrict: FIRE_DEFAULT_DISTRICT, districts: FIRE_DISTRICTS });
 });
 
+function fireIncidentKey(station) {
+    return station.info.filter(line => !/^(im Einsatz seit|alarmiert)/i.test(line.trim())).map(line => line.trim()).join('|');
+}
+
+function countFireIncidents(stations) {
+    return new Set(stations.filter(station => station.status === 'red' || station.status === 'orange').map(fireIncidentKey)).size;
+}
+
+function fireDistrictSnapshot(code) {
+    const state = getFireState(code);
+    const stations = [...state.stations.values()]
+        .filter(station => ['red', 'orange', 'out'].includes(station.status))
+        .map(({ id, name, info, status, startedAt }) => ({ id, name, info, status, startedAt }));
+    return { code, name: fireDistrictName(code), incidentCount: countFireIncidents(stations), stations };
+}
+
 app.get('/api/fire/active', async (req, res) => {
     const scope = req.query.scope === 'all' ? 'all' : parseFireDistrict(req.query.district);
     if (!scope) return res.status(400).json({ error: 'Unbekannter Bezirk.' });
     const force = req.query.refresh === '1';
-    let codes;
-    if (scope === 'all') {
-        const seed = parseFireDistrict(req.query.district) || FIRE_DEFAULT_DISTRICT;
-        await ensureFireData(seed, force);
-        const overview = getFireState(seed).overview || [];
-        codes = overview.filter(item => item.stations > 0 || item.incidents > 0).map(item => item.code);
-        if (!codes.includes(seed)) codes.push(seed);
-    } else {
-        codes = [scope];
-    }
-    const now = Date.now();
-    codes.forEach(code => fireViewedAt.set(code, now));
-    await Promise.all(codes.map(code => ensureFireData(code, force && code !== (scope === 'all' ? parseFireDistrict(req.query.district) || FIRE_DEFAULT_DISTRICT : '') )));
-    const districts = codes.map(code => {
-        const state = getFireState(code);
-        const stations = [...state.stations.values()]
-            .filter(station => station.status === 'red' || station.status === 'orange')
-            .map(({ id, name, info, status, startedAt }) => ({ id, name, info, status, startedAt }));
-        return { code, name: fireDistrictName(code), incidentCount: state.summary?.incidentCount ?? 0, stations };
-    }).filter(item => item.stations.length || item.incidentCount)
-      .sort((a, b) => b.stations.length - a.stations.length);
+    const codes = scope === 'all' ? FIRE_DISTRICTS.map(district => district.code) : [scope];
+    await Promise.all(codes.map(code => ensureFireData(code, force, scope === 'all' ? 20000 : 5000)));
+    if (scope !== 'all') fireViewedAt.set(scope, Date.now());
+    const loaded = codes.filter(code => getFireState(code).updatedAt);
+    if (!loaded.length) return res.status(502).json({ error: 'Feuerwehr-Daten sind gerade nicht erreichbar.' });
+    const all = loaded.map(fireDistrictSnapshot);
+    const districts = all.filter(item => item.stations.length).sort((a, b) => b.stations.length - a.stations.length);
+    const favorite = fireDistrictSnapshot(FIRE_DEFAULT_DISTRICT);
     res.set('Cache-Control', 'no-store').json({
         scope,
         districts,
+        favorite: { code: favorite.code, name: favorite.name, stationCount: favorite.stations.length, incidentCount: favorite.incidentCount },
+        districtsTotal: codes.length,
+        districtsLoaded: loaded.length,
         stationCount: districts.reduce((sum, item) => sum + item.stations.length, 0),
         incidentCount: districts.reduce((sum, item) => sum + item.incidentCount, 0),
         updatedAt: new Date().toISOString()
@@ -849,7 +864,7 @@ app.get('/api/fire', async (req, res) => {
         activeCount: active.length,
         active,
         alerted,
-        incidentCount: fireState.summary?.incidentCount ?? active.length,
+        incidentCount: countFireIncidents(stations),
         history: fireState.history,
         updatedAt: fireState.updatedAt,
         stale: Boolean(fireState.error)

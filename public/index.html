@@ -5463,7 +5463,7 @@
             try {
                 const response = await fetch(`/api/fire?district=${encodeURIComponent(district)}&refresh=1`, { cache: 'no-store' });
                 if (!response.ok) throw new Error();
-                await fetchFireData(true);
+                await Promise.all([fetchFireData(true), loadFireOverview(true)]);
             } catch (error) {
                 fireClient.error = true;
                 if (state.currentTab === 'fire') renderFireTab();
@@ -5510,7 +5510,8 @@
                 <h4 class="flex flex-wrap items-baseline justify-between gap-x-2 text-sm font-bold text-amber-200"><span>Bezirk ${escapeHtml(district.name)}</span><span class="text-[11px] font-normal text-slate-400">${district.stations.length} FF · ${district.incidentCount} ${district.incidentCount === 1 ? 'Einsatz' : 'Einsätze'}</span></h4>
                 ${groups.map(group => {
                     const alerted = group.items.some(item => item.station.status === 'orange');
-                    return `<div class="rounded-xl border ${alerted ? 'border-amber-500/50 bg-amber-950/30' : 'border-red-500/40 bg-red-950/30'} p-3">
+                    const out = group.items.every(item => item.station.status === 'out');
+                    return `<div class="rounded-xl border ${out ? 'border-sky-500/40 bg-sky-950/30' : alerted ? 'border-amber-500/50 bg-amber-950/30' : 'border-red-500/40 bg-red-950/30'} p-3">
                         <p class="text-sm font-bold text-slate-100">${escapeHtml(group.lines[0] || 'Einsatz ohne Beschreibung')}</p>
                         ${group.lines.slice(1).map(line => `<p class="text-xs text-slate-200">${escapeHtml(line)}</p>`).join('')}
                         <p class="mt-2 text-[11px] font-semibold text-slate-300">${group.items.length} ${group.items.length === 1 ? 'Feuerwehr' : 'Feuerwehren'}${alerted ? ' (alarmiert)' : ''}:</p>
@@ -5534,12 +5535,12 @@
                 const result = await response.json();
                 if (!response.ok) throw new Error(result.error || 'Details konnten nicht geladen werden.');
                 if (requestId !== fireDetailRequest || fireDetailScope !== scope) return;
-                const title = scope === 'all' ? 'Niederösterreich' : `Bezirk ${result.districts[0]?.name || fireClient.districts.find(d => d.code === scope)?.name || ''}`;
+                const title = scope === 'all' ? 'Niederösterreich' : `Bezirk ${fireClient.districts.find(d => d.code === scope)?.name || ''}`;
                 document.getElementById('fire-detail-title').textContent = `Einsätze – ${title}`;
-                document.getElementById('fire-detail-sub').textContent = `${result.stationCount} Feuerwehren im Einsatz · ${result.incidentCount} Einsätze gemeldet · Stand ${new Date(result.updatedAt).toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}`;
+                document.getElementById('fire-detail-sub').textContent = `${result.stationCount} Feuerwehren unterwegs · ${result.incidentCount} ${result.incidentCount === 1 ? 'Einsatz' : 'Einsätze'} · Stand ${new Date(result.updatedAt).toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}`;
                 document.getElementById('fire-detail-body').innerHTML = result.districts.length
                     ? result.districts.map(fireDetailDistrictHtml).join('')
-                    : '<p class="text-sm text-slate-300">Aktuell ist keine Feuerwehr im Einsatz.</p>';
+                    : '<p class="text-sm text-slate-300">Aktuell ist keine Feuerwehr unterwegs.</p>';
             } catch (error) {
                 if (requestId === fireDetailRequest) document.getElementById('fire-detail-body').innerHTML = `<p class="text-sm text-rose-300">${escapeHtml(error.message || 'Details konnten nicht geladen werden.')}</p>`;
             } finally {
@@ -5547,27 +5548,47 @@
             }
         }
 
-        function renderFireOverview(data) {
+        let fireOverview = null;
+        let fireOverviewFetchedAt = 0;
+        let fireOverviewLoading = false;
+
+        async function loadFireOverview(force = false) {
+            if (fireOverviewLoading) return;
+            if (!force && Date.now() - fireOverviewFetchedAt < 30000) return;
+            fireOverviewLoading = true;
+            try {
+                const response = await fetch(`/api/fire/active?scope=all${force ? '&refresh=1' : ''}`, { cache: 'no-store' });
+                if (!response.ok) throw new Error();
+                fireOverview = await response.json();
+                fireOverviewFetchedAt = Date.now();
+            } catch (error) {
+            } finally {
+                fireOverviewLoading = false;
+                renderFireOverview();
+            }
+        }
+
+        function renderFireOverview() {
             const box = document.getElementById('fire-overview');
-            const items = data.overview || [];
             if (!box) return;
-            if (!items.length) { box.innerHTML = ''; return; }
-            const totalStations = items.reduce((sum, item) => sum + item.stations, 0);
-            const totalIncidents = items.reduce((sum, item) => sum + item.incidents, 0);
-            const activeDistricts = items.filter(item => item.stations > 0 || item.incidents > 0).sort((a, b) => b.stations - a.stations || b.incidents - a.incidents);
-            const own = items.find(item => item.code === data.districtCode);
+            const data = fireOverview;
+            if (!data) {
+                box.innerHTML = '<p class="text-xs text-slate-400">Übersicht Niederösterreich wird geladen …</p>';
+                return;
+            }
+            const favorite = data.favorite;
             box.innerHTML = `
-                <div class="flex items-center justify-between gap-2">
+                <button type="button" onclick="openFireDetail('all')" class="flex w-full items-center justify-between gap-2 text-left">
                     <h3 class="text-sm font-bold text-slate-100"><i class="fa-solid fa-map-location-dot mr-1 text-amber-400"></i>Niederösterreich gesamt</h3>
-                    <span class="text-[11px] text-slate-400">${activeDistricts.length} von ${items.length} Bezirken aktiv</span>
-                </div>
+                    <span class="text-[11px] text-slate-400">${data.districts.length} von ${data.districtsTotal} Bezirken aktiv · Alle anzeigen <i class="fa-solid fa-chevron-right text-[9px]"></i></span>
+                </button>
                 <div class="grid grid-cols-3 gap-2 text-center">
-                    <button type="button" onclick="openFireDetail('all')" class="min-h-16 rounded-lg bg-slate-900/70 p-2 hover:bg-slate-900"><p class="text-2xl font-black ${totalStations ? 'text-red-300' : 'text-emerald-300'}">${totalStations}</p><p class="text-[10px] text-slate-400">Feuerwehren unterwegs</p></button>
-                    <button type="button" onclick="openFireDetail('all')" class="min-h-16 rounded-lg bg-slate-900/70 p-2 hover:bg-slate-900"><p class="text-2xl font-black text-slate-100">${totalIncidents}</p><p class="text-[10px] text-slate-400">Einsätze gemeldet</p></button>
-                    <button type="button" onclick="openFireDetail('${escapeHtml(data.districtCode)}')" class="min-h-16 rounded-lg bg-slate-900/70 p-2 hover:bg-slate-900"><p class="text-2xl font-black text-amber-300">${own ? own.stations : 0}</p><p class="text-[10px] text-slate-400">in ${escapeHtml(own?.name || 'meinem Bezirk')}</p></button>
+                    <button type="button" onclick="openFireDetail('all')" class="min-h-16 rounded-lg bg-slate-900/70 p-2 hover:bg-slate-900"><p class="text-2xl font-black ${data.stationCount ? 'text-red-300' : 'text-emerald-300'}">${data.stationCount}</p><p class="text-[10px] text-slate-400">Feuerwehren unterwegs</p></button>
+                    <button type="button" onclick="openFireDetail('all')" class="min-h-16 rounded-lg bg-slate-900/70 p-2 hover:bg-slate-900"><p class="text-2xl font-black text-slate-100">${data.incidentCount}</p><p class="text-[10px] text-slate-400">Einsätze</p></button>
+                    <button type="button" onclick="openFireDetail('${escapeHtml(favorite.code)}')" class="min-h-16 rounded-lg bg-slate-900/70 p-2 hover:bg-slate-900"><p class="text-2xl font-black text-amber-300">${favorite.stationCount}</p><p class="text-[10px] text-slate-400">★ ${escapeHtml(favorite.name)}</p></button>
                 </div>
                 <div class="flex flex-wrap gap-1.5">
-                    ${activeDistricts.map(item => `<button type="button" onclick="setFireDistrict('${escapeHtml(item.code)}')" class="min-h-8 rounded-full border px-2.5 text-[11px] ${item.code === data.districtCode ? 'border-amber-400/60 bg-amber-500/10 text-amber-200' : 'border-slate-600 text-slate-300 hover:bg-slate-800'}">${escapeHtml(item.name)} · ${item.stations} FF${item.incidents ? ` · ${item.incidents} ${item.incidents === 1 ? 'Einsatz' : 'Einsätze'}` : ''}</button>`).join('') || '<p class="text-[11px] text-slate-400">Aktuell ist in ganz Niederösterreich keine Feuerwehr im Einsatz.</p>'}
+                    ${data.districts.map(item => `<button type="button" onclick="openFireDetail('${escapeHtml(item.code)}')" class="min-h-8 rounded-full border px-2.5 text-[11px] ${item.code === favorite.code ? 'border-amber-400/60 bg-amber-500/10 text-amber-200' : 'border-slate-600 text-slate-300 hover:bg-slate-800'}">${escapeHtml(item.name)} · ${item.stations.length} FF${item.incidentCount ? ` · ${item.incidentCount} ${item.incidentCount === 1 ? 'Einsatz' : 'Einsätze'}` : ''}</button>`).join('') || '<p class="text-[11px] text-slate-400">Aktuell ist in ganz Niederösterreich keine Feuerwehr unterwegs.</p>'}
                 </div>`;
         }
 
@@ -5596,7 +5617,8 @@
                     <p class="text-3xl font-black text-slate-100">${data.incidentCount}</p>
                     <p class="text-xs text-slate-300">Einsätze im Bezirk <i class="fa-solid fa-chevron-right text-[9px]"></i></p>
                 </button>`;
-            renderFireOverview(data);
+            renderFireOverview();
+            loadFireOverview();
             const alerted = visible.alerted.map(item => fireCardHtml(item, 'orange')).join('');
             active.innerHTML = (visible.active.map(item => fireCardHtml(item, 'red')).join('') + alerted) || '<p class="text-sm text-slate-400">Aktuell ist keine Feuerwehr im Einsatz.</p>';
             history.innerHTML = visible.history.map(item => fireCardHtml(item, 'grey')).join('') || '<p class="text-sm text-slate-400">Seit dem Serverstart gab es keine neuen Ausrückungen.</p>';
