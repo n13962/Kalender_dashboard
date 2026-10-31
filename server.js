@@ -841,7 +841,11 @@ app.post('/api/fire/telegram-test', async (req, res) => {
     if (!TELEGRAM_BOT_TOKEN || !fireTelegramRecipients.length) {
         return res.status(400).json({ error: 'Bitte Bot-Token und mindestens einen Empfänger in den Einstellungen konfigurieren.' });
     }
-    const message = '✅ Testnachricht vom Familien-Dashboard: Telegram-Benachrichtigungen funktionieren.';
+    const messages = {
+        goal: '⚽ TEST – TOR für FC Beispiel!\nFC Beispiel 1 : 0 SK Muster\nÖsterreichische Bundesliga · 23\'\n(Das ist nur eine Testmeldung.)',
+        fire: '🚒 TEST – Feuerwehreinsatz\nFeuerwehr: FF Beispiel\n(Das ist nur eine Testmeldung.)'
+    };
+    const message = messages[req.body?.type] || '✅ Testnachricht vom Familien-Dashboard: Telegram-Benachrichtigungen funktionieren.';
     const requestedChatId = typeof req.body?.chatId === 'string' ? req.body.chatId.trim() : '';
     const targets = requestedChatId ? fireTelegramRecipients.filter(recipient => recipient.chatId === requestedChatId) : fireTelegramRecipients;
     if (!targets.length) return res.status(404).json({ error: 'Empfänger nicht gefunden.' });
