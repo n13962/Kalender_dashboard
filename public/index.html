@@ -934,6 +934,12 @@
                                 <span>Sport</span>
                             </button>
                         </div>
+                        <div id="nav-item-weather">
+                            <button onclick="switchTab('weather')" id="nav-btn-weather" class="w-full flex items-center space-x-2.5 px-3 py-2 rounded-xl text-xs font-medium text-slate-300 hover:bg-slate-800/80 transition-all">
+                                <i class="fa-solid fa-cloud-sun w-4 text-center text-emerald-400"></i>
+                                <span>Wetterstation</span>
+                            </button>
+                        </div>
                         <div id="nav-item-news">
                             <button onclick="switchTab('news')" id="nav-btn-news" class="w-full flex items-center space-x-2.5 px-3 py-2 rounded-xl text-xs font-medium text-slate-300 hover:bg-slate-800/80 transition-all">
                                 <i class="fa-solid fa-newspaper w-4 text-center text-emerald-400"></i>
@@ -1339,6 +1345,23 @@
                         <div id="football-tab-filters" class="inline-flex rounded-xl border border-indigo-500/20 bg-slate-950 p-1"></div>
                     </div>
                     <div id="football-tab-content" aria-live="polite"></div>
+                </div>
+
+                <div id="tab-weather" class="tab-content hidden space-y-3 rounded-2xl border border-indigo-500/30 bg-slate-900/80 p-4 shadow-sm">
+                    <div class="flex items-center justify-between gap-3 border-b border-indigo-500/20 pb-3">
+                        <div class="flex min-w-0 items-center gap-3">
+                            <i class="fa-solid fa-cloud-sun text-emerald-400 text-lg"></i>
+                            <div class="min-w-0">
+                                <h2 class="text-lg font-bold text-slate-100">Wetterstation</h2>
+                                <p class="truncate text-[11px] text-slate-400">Netatmo – meine Station zuhause</p>
+                            </div>
+                        </div>
+                        <div class="flex shrink-0 gap-2">
+                            <button type="button" onclick="reloadWeatherFrame()" aria-label="Wetterstation neu laden" title="Neu laden" class="flex h-10 w-10 items-center justify-center rounded-xl border border-emerald-400/20 bg-slate-950 text-emerald-200 hover:bg-slate-800"><i class="fa-solid fa-rotate"></i></button>
+                            <a href="https://weathermap.netatmo.com/?stationid=70:ee:50:65:82:24&zoom=14.896073194741046" target="_blank" rel="noopener noreferrer" aria-label="Netatmo in neuem Tab öffnen" title="In neuem Tab öffnen" class="flex h-10 w-10 items-center justify-center rounded-xl border border-emerald-400/20 bg-slate-950 text-emerald-200 hover:bg-slate-800"><i class="fa-solid fa-up-right-from-square"></i></a>
+                        </div>
+                    </div>
+                    <iframe id="weather-frame" title="Netatmo Wetterstation" loading="lazy" referrerpolicy="no-referrer" class="w-full rounded-xl border border-indigo-500/20 bg-slate-950" style="height: calc(100vh - 14rem); min-height: 420px;"></iframe>
                 </div>
 
                 <div id="tab-news" class="tab-content hidden space-y-3 rounded-2xl border border-indigo-500/30 bg-slate-900/80 p-4 shadow-sm">
@@ -4723,7 +4746,7 @@
         function switchTab(tabId) {
             state.currentTab = tabId;
             document.getElementById('app-body')?.classList.toggle('mobile-settings-open', tabId === 'settings');
-            ['dashboard', 'calendar', 'meals', 'tasks', 'shopping', 'football', 'news', 'offers', 'fire', 'cameras', 'smart-home', 'family', 'settings'].forEach(t => {
+            ['dashboard', 'calendar', 'meals', 'tasks', 'shopping', 'football', 'news', 'weather', 'offers', 'fire', 'cameras', 'smart-home', 'family', 'settings'].forEach(t => {
                 const contentEl = document.getElementById(`tab-${t}`);
                 const btnEl = document.getElementById(`nav-btn-${t}`);
                 if (contentEl) {
@@ -4754,6 +4777,7 @@
             if (tabId === 'football') openFootballTab();
             if (tabId === 'fire') renderFireTab();
             if (tabId === 'news') openNewsTab();
+            if (tabId === 'weather') openWeatherTab();
             if (tabId === 'offers') loadOffers();
             if (tabId === 'cameras') startCameraTab(); else stopCameraTab();
             if (tabId === 'calendar') {
@@ -5983,6 +6007,19 @@
                 ${section('Letzte Ergebnisse', data.results.slice(0, 10), 'results', 'Keine Ergebnisse gefunden.')}
                 <p class="text-[10px] text-slate-500">Quelle: TheSportsDB (PDC). Spielergebnisse einzelner Matches erscheinen, sobald sie dort eingetragen sind – nicht sekundengenau live.</p>
             </div>`;
+        }
+
+
+        const WEATHER_STATION_URL = 'https://weathermap.netatmo.com/?stationid=70:ee:50:65:82:24&zoom=14.896073194741046';
+
+        function openWeatherTab() {
+            const frame = document.getElementById('weather-frame');
+            if (frame && !frame.getAttribute('src')) frame.src = WEATHER_STATION_URL;
+        }
+
+        function reloadWeatherFrame() {
+            const frame = document.getElementById('weather-frame');
+            if (frame) frame.src = WEATHER_STATION_URL;
         }
 
         const newsState = { data: null, scope: 'gmuend', loading: false, error: '', fetchedAt: 0 };
