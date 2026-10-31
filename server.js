@@ -795,6 +795,215 @@ app.get('/api/local-updates', async (req, res) => {
     }
 });
 
+const OFFERS_ZIP = /^\d{4}$/.test(process.env.OFFERS_ZIP || '') ? process.env.OFFERS_ZIP : '3970';
+const OFFERS_CACHE_MS = 3 * 60 * 60 * 1000;
+const OFFER_RETAILERS = {
+    billa: 'Billa', 'billa-plus': 'Billa Plus', spar: 'Spar', eurospar: 'Eurospar', interspar: 'Interspar',
+    hofer: 'Hofer', lidl: 'Lidl', penny: 'Penny'
+};
+const OFFER_CATEGORIES = [
+    { id: 'beer', name: 'Bier & Radler', terms: ['bier', 'radler'] },
+    { id: 'wine', name: 'Wein & Sekt', terms: ['wein', 'sekt', 'prosecco'] },
+    { id: 'softdrinks', name: 'Limo, Cola & Eistee', terms: ['cola', 'limonade', 'eistee', 'energy drink', 'fanta', 'sprite'] },
+    { id: 'water', name: 'Wasser', terms: ['mineralwasser', 'wasser'] },
+    { id: 'juice', name: 'Säfte', terms: ['saft', 'nektar'] },
+    { id: 'spirits', name: 'Spirituosen', terms: ['vodka', 'whisky', 'gin', 'rum', 'likör', 'schnaps'] },
+    { id: 'meat', name: 'Fleisch & Wurst', terms: ['fleisch', 'wurst', 'schinken', 'speck', 'schnitzel', 'faschiertes', 'hühner', 'salami', 'würstel', 'steak', 'leberkäse'] }
+];
+let offersCache = { fetchedAt: 0, data: null };
+let offersRequest = null;
+let marktguruKeys = null;
+
+async function getMarktguruKeys(forceRefresh = false) {
+    if (marktguruKeys && !forceRefresh) return marktguruKeys;
+    const response = await fetch('https://www.marktguru.at/', { headers: { 'User-Agent': 'Mozilla/5.0' }, signal: AbortSignal.timeout(15000) });
+    if (!response.ok) throw new Error(`Angebotsdienst nicht erreichbar (HTTP ${response.status}).`);
+    const html = await response.text();
+    const apiKey = html.match(/"apiKey":"([^"]+)"/)?.[1];
+    const clientKey = html.match(/"clientKey":"([^"]+)"/)?.[1];
+    if (!apiKey || !clientKey) throw new Error('Der Angebotsdienst hat sein Format geändert.');
+    marktguruKeys = { apiKey, clientKey };
+    return marktguruKeys;
+}
+
+async function searchMarktguru(term, retry = true) {
+    const keys = await getMarktguruKeys();
+    const url = `https://api.marktguru.at/api/v1/offers/search?as=web&limit=100&offset=0&q=${encodeURIComponent(term)}&zipCode=${OFFERS_ZIP}`;
+    const response = await fetch(url, {
+        headers: { 'x-apikey': keys.apiKey, 'x-clientkey': keys.clientKey, 'User-Agent': 'Mozilla/5.0' },
+        signal: AbortSignal.timeout(15000)
+    });
+    if ((response.status === 401 || response.status === 403) && retry) {
+        await getMarktguruKeys(true);
+        return searchMarktguru(term, false);
+    }
+    if (!response.ok) throw new Error(`Angebotsdienst antwortet mit HTTP ${response.status}.`);
+    const body = await response.json();
+    return Array.isArray(body.results) ? body.results : [];
+}
+
+function normalizeOffer(offer, category, now) {
+    const retailerKey = offer.advertisers?.[0]?.uniqueName;
+    if (!OFFER_RETAILERS[retailerKey]) return null;
+    const validity = offer.validityDates?.find(range => Date.parse(range.from) <= now && now <= Date.parse(range.to));
+    if (!validity || !(offer.price > 0)) return null;
+    const liters = offer.unit?.shortName === 'l' && offer.volume > 0 ? offer.volume * (offer.quantity || 1) : null;
+    const discount = offer.oldPrice > offer.price ? Math.round((1 - offer.price / offer.oldPrice) * 100) : 0;
+    const brand = offer.brand?.name || '';
+    const productName = offer.product?.name || '';
+    return {
+        id: offer.id,
+        category: category.id,
+        retailer: OFFER_RETAILERS[retailerKey],
+        title: [brand, productName].filter(Boolean).join(' ') || 'Angebot',
+        description: offer.description || '',
+        price: offer.price,
+        oldPrice: offer.oldPrice > offer.price ? offer.oldPrice : null,
+        discount,
+        liters,
+        pricePerLiter: liters ? Math.round((offer.price / liters) * 100) / 100 : null,
+        validFrom: validity.from,
+        validTo: validity.to,
+        url: typeof offer.externalUrl === 'string' && offer.externalUrl.startsWith('https://') ? offer.externalUrl : null,
+        image: offer.images?.count > 0 ? `https://api.marktguru.at/api/v1/offers/${offer.id}/images/default/0/medium.webp` : null
+    };
+}
+
+async function fetchDrinkOffers() {
+    const now = Date.now();
+    const seen = new Set();
+    const offers = [];
+    let failures = 0;
+    for (const category of OFFER_CATEGORIES) {
+        for (const term of category.terms) {
+            let results;
+            try {
+                results = await searchMarktguru(term);
+            } catch (error) {
+                failures += 1;
+                console.error(`Angebotsabruf für "${term}" fehlgeschlagen:`, error.message);
+                continue;
+            }
+            for (const result of results) {
+                if (seen.has(result.id)) continue;
+                const offer = normalizeOffer(result, category, now);
+                if (!offer) continue;
+                seen.add(result.id);
+                offers.push(offer);
+            }
+        }
+    }
+    const attempts = OFFER_CATEGORIES.reduce((sum, category) => sum + category.terms.length, 0);
+    if (failures === attempts) throw new Error('Die Angebote konnten nicht geladen werden.');
+    offers.sort((a, b) => b.discount - a.discount || a.price - b.price);
+    return {
+        zip: OFFERS_ZIP,
+        categories: OFFER_CATEGORIES.map(({ id, name }) => ({ id, name })),
+        retailers: Object.values(OFFER_RETAILERS),
+        offers
+    };
+}
+
+app.get('/api/offers', async (req, res) => {
+    const forceRefresh = req.query.refresh === '1' && Date.now() - offersCache.fetchedAt > 60 * 1000;
+    if (offersCache.data && !forceRefresh && Date.now() - offersCache.fetchedAt < OFFERS_CACHE_MS) {
+        return res.json({ ...offersCache.data, updatedAt: new Date(offersCache.fetchedAt).toISOString() });
+    }
+    try {
+        offersRequest ||= fetchDrinkOffers();
+        const data = await offersRequest;
+        offersCache = { fetchedAt: Date.now(), data };
+        res.json({ ...data, updatedAt: new Date(offersCache.fetchedAt).toISOString() });
+    } catch (error) {
+        if (offersCache.data) return res.json({ ...offersCache.data, updatedAt: new Date(offersCache.fetchedAt).toISOString(), stale: true });
+        res.status(502).json({ error: error.message || 'Die Angebote konnten nicht geladen werden.' });
+    } finally {
+        offersRequest = null;
+    }
+});
+
+const searchCache = new Map();
+
+function cachedSearch(key, ttlMs, loader) {
+    const hit = searchCache.get(key);
+    if (hit && Date.now() - hit.at < ttlMs) return hit.promise;
+    const promise = loader();
+    searchCache.set(key, { at: Date.now(), promise });
+    promise.catch(() => searchCache.delete(key));
+    if (searchCache.size > 200) searchCache.delete(searchCache.keys().next().value);
+    return promise;
+}
+
+function parseSearchQuery(req, res) {
+    const q = typeof req.query.q === 'string' ? req.query.q.trim().replace(/\s+/g, ' ') : '';
+    if (q.length < 2 || q.length > 60) {
+        res.status(400).json({ error: 'Bitte einen Suchbegriff mit 2 bis 60 Zeichen eingeben.' });
+        return null;
+    }
+    return q;
+}
+
+app.get('/api/offers/search', async (req, res) => {
+    const q = parseSearchQuery(req, res);
+    if (!q) return;
+    try {
+        const offers = await cachedSearch(`mg:${q.toLowerCase()}`, 30 * 60 * 1000, async () => {
+            const now = Date.now();
+            const seen = new Set();
+            return (await searchMarktguru(q))
+                .map(result => normalizeOffer(result, { id: 'search' }, now))
+                .filter(offer => offer && !seen.has(offer.id) && seen.add(offer.id))
+                .sort((a, b) => b.discount - a.discount || a.price - b.price);
+        });
+        res.json({ query: q, offers });
+    } catch (error) {
+        res.status(502).json({ error: error.message || 'Die Suche ist fehlgeschlagen.' });
+    }
+});
+
+function decodeHtmlText(value) {
+    return value.replace(/<[^>]+>/g, '').replace(/&amp;/g, '&').replace(/&quot;/g, '"').replace(/&#0?39;/g, "'").replace(/&nbsp;/g, ' ').replace(/\s+/g, ' ').trim();
+}
+
+function geizhalsSearchUrl(query) {
+    return `https://geizhals.at/?fs=${encodeURIComponent(query).replace(/%20/g, '+')}&hloc=at`;
+}
+
+async function fetchGeizhalsPrices(query) {
+    const response = await fetch(geizhalsSearchUrl(query), {
+        headers: { 'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/120 Safari/537.36', 'Accept-Language': 'de-AT,de;q=0.9' },
+        signal: AbortSignal.timeout(15000)
+    });
+    if (!response.ok) throw new Error(`Der Preisvergleich antwortet mit HTTP ${response.status}.`);
+    const html = await response.text();
+    return html.split('class="galleryview__item card"').slice(1, 13).flatMap(block => {
+        const link = block.match(/class="galleryview__name-link"\s+title="([^"]*)"/);
+        const href = block.match(/href="(https:\/\/geizhals\.at\/[^"#]+)"\s+class="galleryview__name-link"/)?.[1];
+        const priceText = block.match(/<span class="price">\s*€\s*([\d.]+,\d{2})/)?.[1];
+        if (!link || !href || !priceText) return [];
+        const image = block.match(/<img\s+src="(https:\/\/gzhls\.at\/[^"]+)"/)?.[1] || null;
+        const shops = block.match(/([\d.]+)\s+Angebote?/)?.[1];
+        return [{
+            title: decodeHtmlText(link[1]),
+            price: Number(priceText.replace(/\./g, '').replace(',', '.')),
+            shops: shops ? Number(shops.replace(/\./g, '')) : null,
+            image,
+            url: href
+        }];
+    }).sort((a, b) => a.price - b.price);
+}
+
+app.get('/api/offers/web-compare', async (req, res) => {
+    const q = parseSearchQuery(req, res);
+    if (!q) return;
+    try {
+        const results = await cachedSearch(`gh:${q.toLowerCase()}`, 30 * 60 * 1000, () => fetchGeizhalsPrices(q));
+        res.json({ query: q, source: 'Geizhals.at', searchUrl: geizhalsSearchUrl(q), results });
+    } catch (error) {
+        res.status(502).json({ error: error.message || 'Der Preisvergleich ist fehlgeschlagen.' });
+    }
+});
+
 async function fetchEspnJson(url) {
     const response = await fetch(url, {
         headers: { Accept: 'application/json' },
