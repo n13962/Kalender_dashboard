@@ -672,14 +672,20 @@ async function sendFireTelegramAlert(district, summary, station, startedAt, stat
 
     const pending = (async () => {
         try {
-            const details = station.info.length ? `\n${station.info.join('\n')}` : '';
+            const lines = station.info.map(line => line.trim()).filter(Boolean);
+            const codeLine = lines.find(line => /^[A-ZÄÖÜ]{1,3}\s?\d{1,2}\b/.test(line));
+            const placeLine = lines.find(line => /^Einsatzort:/i.test(line));
+            const otherLines = lines.filter(line => line !== codeLine && line !== placeLine);
             const message = [
                 status === 'orange'
-                    ? `⚠️ Feuerwehr alarmiert im Bezirk ${districtName}`
-                    : `🚒 Feuerwehreinsatz im Bezirk ${districtName}`,
+                    ? `⚠️ FEUERWEHR ALARMIERT – Bezirk ${districtName}`
+                    : `🚒 Feuerwehr im Einsatz – Bezirk ${districtName}`,
                 `Feuerwehr: ${station.name}`,
-                `Zeitpunkt: ${new Date(startedAt).toLocaleString('de-AT')}${details}`
-            ].join('\n');
+                codeLine ? `Einsatzcode: ${codeLine}` : null,
+                placeLine ? placeLine.replace(/^Einsatzort:\s*/i, 'Einsatzort: ') : null,
+                ...otherLines,
+                `Zeitpunkt: ${new Date(startedAt).toLocaleString('de-AT', { timeZone: 'Europe/Vienna' })}`
+            ].filter(Boolean).join('\n');
             const results = await Promise.allSettled(recipients.map(recipient => sendTelegramMessage(message, recipient)));
             results.forEach((result, index) => {
                 if (result.status === 'rejected') {
@@ -843,7 +849,7 @@ app.post('/api/fire/telegram-test', async (req, res) => {
     }
     const messages = {
         goal: '⚽ TEST – TOR für FC Beispiel!\nFC Beispiel 1 : 0 SK Muster\nÖsterreichische Bundesliga · 23\'\n(Das ist nur eine Testmeldung.)',
-        fire: '🚒 TEST – Feuerwehreinsatz\nFeuerwehr: FF Beispiel\n(Das ist nur eine Testmeldung.)'
+        fire: '⚠️ TEST – FEUERWEHR ALARMIERT – Bezirk Beispiel\nFeuerwehr: FF Beispiel\nEinsatzcode: B2 Gebäudebrand - Innenraum\nEinsatzort: Beispielort\n(Das ist nur eine Testmeldung.)'
     };
     const message = messages[req.body?.type] || '✅ Testnachricht vom Familien-Dashboard: Telegram-Benachrichtigungen funktionieren.';
     const requestedChatId = typeof req.body?.chatId === 'string' ? req.body.chatId.trim() : '';
