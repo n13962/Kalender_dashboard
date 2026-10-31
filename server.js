@@ -1236,6 +1236,69 @@ app.get('/api/football/matches', async (req, res) => {
     }
 });
 
+const FOOTBALL_PUSH_KEY = 'familien-dashboard-football-push';
+const FOOTBALL_PUSH_LIVE_MS = 30 * 1000;
+const FOOTBALL_PUSH_IDLE_MS = 2 * 60 * 1000;
+let footballGoalBaseline = null;
+
+function getFavoriteFootballTeamIds() {
+    try {
+        const ids = JSON.parse(syncData.items['familien-dashboard-football-teams']?.value || '[]');
+        return new Set(Array.isArray(ids) ? ids.map(String).filter(id => /^\d{1,12}$/.test(id)) : []);
+    } catch {
+        return new Set();
+    }
+}
+
+async function sendFootballGoalAlert(match, scoringTeam) {
+    const recipients = fireTelegramRecipients.filter(recipient => recipient.chatId);
+    const text = `⚽ TOR für ${scoringTeam.name}!\n${match.home.name} ${match.home.score} : ${match.away.score} ${match.away.name}\n${match.league}${match.status.detail ? ` · ${match.status.detail}` : ''}`;
+    await Promise.allSettled(recipients.map(recipient => sendTelegramMessage(text, recipient)));
+}
+
+async function checkFootballGoals() {
+    let nextDelay = FOOTBALL_PUSH_IDLE_MS;
+    try {
+        const favorites = getFavoriteFootballTeamIds();
+        const enabled = syncData.items[FOOTBALL_PUSH_KEY]?.value !== 'false';
+        if (!favorites.size || !enabled || !TELEGRAM_BOT_TOKEN || !fireTelegramRecipients.length) {
+            footballGoalBaseline = null;
+            return;
+        }
+        const date = getViennaDateKey();
+        const settled = await Promise.allSettled(FOOTBALL_LEAGUES.map(async league => {
+            const url = new URL(`${league.url}/scoreboard`);
+            url.searchParams.set('dates', date);
+            url.searchParams.set('limit', '100');
+            return { league, data: await fetchEspnJson(url) };
+        }));
+        if (settled.every(item => item.status === 'rejected')) return;
+        const seen = new Set();
+        const matches = settled.filter(item => item.status === 'fulfilled')
+            .flatMap(({ value }) => (value.data.events || []).map(event => mapEspnFootballEvent(event, value.league.name)))
+            .filter(match => match && !seen.has(match.id) && seen.add(match.id))
+            .filter(match => favorites.has(match.home.id) || favorites.has(match.away.id));
+        if (matches.some(match => match.status.state === 'in')) nextDelay = FOOTBALL_PUSH_LIVE_MS;
+        const next = new Map(matches.map(match => [match.id, { home: Number.parseInt(match.home.score, 10) || 0, away: Number.parseInt(match.away.score, 10) || 0 }]));
+        const previous = footballGoalBaseline;
+        footballGoalBaseline = next;
+        if (!previous) return;
+        for (const match of matches) {
+            const before = previous.get(match.id);
+            const now = next.get(match.id);
+            if (!before || match.status.state === 'pre') continue;
+            if (now.home > before.home && favorites.has(match.home.id)) void sendFootballGoalAlert(match, match.home);
+            if (now.away > before.away && favorites.has(match.away.id)) void sendFootballGoalAlert(match, match.away);
+        }
+    } catch (error) {
+        console.error('Tor-Überwachung fehlgeschlagen:', error.message);
+    } finally {
+        setTimeout(checkFootballGoals, nextDelay).unref();
+    }
+}
+
+setTimeout(checkFootballGoals, 15000).unref();
+
 function getFootballLeagueView(req, res) {
     const view = Object.hasOwn(FOOTBALL_LEAGUE_VIEWS, req.params.league) ? FOOTBALL_LEAGUE_VIEWS[req.params.league] : null;
     if (!view) res.status(404).json({ error: 'Unbekannter Wettbewerb.' });
@@ -1726,7 +1789,8 @@ const SYNC_KEYS = new Set([
     'familien-dashboard-habits',
     'familien-dashboard-points',
     'familien-dashboard-shopping',
-    'familien-dashboard-fire-view'
+    'familien-dashboard-fire-view',
+    'familien-dashboard-football-push'
 ]);
 const MAX_SYNC_VALUE_LENGTH = 1500000;
 

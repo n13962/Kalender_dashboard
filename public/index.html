@@ -1611,6 +1611,11 @@
                             <i class="fa-solid fa-bell text-amber-400"></i>
                             <span>Telegram-Benachrichtigungen aktivieren</span>
                         </label>
+                        <label class="flex items-center gap-3 p-3 rounded-xl bg-slate-950 border border-indigo-500/20 text-xs text-slate-200">
+                            <input id="football-push-enabled" type="checkbox" checked onchange="setFootballPushEnabled(this.checked)" class="h-4 w-4 rounded border-slate-700 bg-slate-900 text-amber-500">
+                            <i class="fa-solid fa-futbol text-emerald-400"></i>
+                            <span>Tor-Meldungen meiner Lieblingsvereine per Telegram an alle Empfänger</span>
+                        </label>
                         <div class="space-y-2 rounded-xl border border-indigo-500/20 bg-slate-950 p-3">
                             <p class="text-xs font-semibold text-slate-200">Telegram-Empfänger</p>
                             <div class="grid gap-2 sm:grid-cols-[1fr_1fr_auto]">
@@ -2001,9 +2006,10 @@
         </footer>
     </div>
 
-    <div id="night-mode-screen" class="fixed inset-0 z-[80] hidden bg-black text-white flex-col items-center justify-center text-center px-6">
+    <div id="night-mode-screen" onclick="dismissNightScreen()" class="fixed inset-0 z-[80] hidden bg-black text-white flex-col items-center justify-center text-center px-6 cursor-pointer">
         <time id="night-mode-date" class="text-lg sm:text-2xl font-medium text-white/75">Montag, 19. Oktober 2026</time>
         <time id="night-mode-clock" class="mt-3 text-7xl sm:text-9xl font-light tabular-nums text-white">21:00</time>
+        <span class="mt-8 text-xs text-white/30">Antippen zum Ausblenden</span>
     </div>
 
     <!-- Slideshow Fullscreen Modal -->
@@ -2458,6 +2464,7 @@
         const HABITS_STORAGE_KEY = 'familien-dashboard-habits';
         const SHOPPING_STORAGE_KEY = 'familien-dashboard-shopping';
         const FIRE_VIEW_STORAGE_KEY = 'familien-dashboard-fire-view';
+        const FOOTBALL_PUSH_STORAGE_KEY = 'familien-dashboard-football-push';
         const POINTS_STORAGE_KEY = 'familien-dashboard-points';
         const FOOTER_SETTINGS_KEY = 'familien-dashboard-footer-settings';
         let pointSystemEnabled = false;
@@ -3927,6 +3934,17 @@
             savePointSettings();
         }
 
+        function loadFootballPushSetting() {
+            let enabled = true;
+            try { enabled = localStorage.getItem(FOOTBALL_PUSH_STORAGE_KEY) !== 'false'; } catch (error) {}
+            const toggle = document.getElementById('football-push-enabled');
+            if (toggle) toggle.checked = enabled;
+        }
+
+        function setFootballPushEnabled(enabled) {
+            try { localStorage.setItem(FOOTBALL_PUSH_STORAGE_KEY, String(enabled)); } catch (error) {}
+        }
+
         function loadNightModeSetting() {
             try {
                 const saved = localStorage.getItem('familien-dashboard-night-mode');
@@ -3935,6 +3953,7 @@
                 state.nightModeEnabled = true;
             }
             document.getElementById('night-mode-toggle').checked = state.nightModeEnabled;
+            loadFootballPushSetting();
             updateNightMode();
         }
 
@@ -4313,6 +4332,7 @@
         }
 
         function handleInactivityActivity(event) {
+            if (nightDismissed) scheduleNightRearm();
             const modal = document.getElementById('slideshow-fullscreen');
             if (modal && !modal.classList.contains('hidden')) {
                 if (event.type === 'mousemove' || event.type === 'touchstart' || event.type === 'click' || event.type === 'keypress') {
@@ -4391,9 +4411,30 @@
             updateNightMode();
         }
 
+        let nightDismissed = false;
+        let nightRearmTimer = null;
+
+        function scheduleNightRearm() {
+            clearTimeout(nightRearmTimer);
+            nightRearmTimer = setTimeout(() => {
+                nightDismissed = false;
+                updateNightMode();
+            }, state.inactivityLimit);
+        }
+
+        function dismissNightScreen() {
+            nightDismissed = true;
+            scheduleNightRearm();
+            updateNightMode();
+        }
+
         function updateNightMode() {
             const now = new Date();
-            const active = isNightModeTime(now);
+            if (nightDismissed && !isNightModeTime(now)) {
+                nightDismissed = false;
+                clearTimeout(nightRearmTimer);
+            }
+            const active = isNightModeTime(now) && !nightDismissed;
             const screen = document.getElementById('night-mode-screen');
             if (!screen) return;
 
@@ -5974,7 +6015,7 @@
         }
 
         // Geräte-Sync: gemeinsame Daten werden über den Server auf alle Geräte verteilt
-        const SYNC_KEYS = [MEMBER_STORAGE_KEY, BIRTHDAY_STORAGE_KEY, EVENTS_STORAGE_KEY, FOOTBALL_TEAMS_STORAGE_KEY, CUSTOM_TABS_STORAGE_KEY, TASKS_STORAGE_KEY, HABITS_STORAGE_KEY, POINTS_STORAGE_KEY, SHOPPING_STORAGE_KEY, FIRE_VIEW_STORAGE_KEY];
+        const SYNC_KEYS = [MEMBER_STORAGE_KEY, BIRTHDAY_STORAGE_KEY, EVENTS_STORAGE_KEY, FOOTBALL_TEAMS_STORAGE_KEY, CUSTOM_TABS_STORAGE_KEY, TASKS_STORAGE_KEY, HABITS_STORAGE_KEY, POINTS_STORAGE_KEY, SHOPPING_STORAGE_KEY, FIRE_VIEW_STORAGE_KEY, FOOTBALL_PUSH_STORAGE_KEY];
         const SYNC_PENDING_KEY = 'familien-dashboard-sync-pending';
         const SYNC_JOINED_KEY = 'familien-dashboard-sync-joined';
         const nativeStorageSetItem = Storage.prototype.setItem;
@@ -6053,6 +6094,7 @@
             if (changed(EVENTS_STORAGE_KEY)) run(loadSavedCalendarEvents);
             if (changed(TASKS_STORAGE_KEY) || changed(HABITS_STORAGE_KEY) || changed(SHOPPING_STORAGE_KEY)) run(loadOrganizerData);
             if (changed(SHOPPING_STORAGE_KEY)) run(renderShoppingList);
+            if (changed(FOOTBALL_PUSH_STORAGE_KEY)) run(loadFootballPushSetting);
             if (changed(FIRE_VIEW_STORAGE_KEY)) run(() => { loadFireView(); fetchFireData(true); });
             if (changed(POINTS_STORAGE_KEY)) run(loadPointSettings);
             if (changed(CUSTOM_TABS_STORAGE_KEY)) run(loadCustomTabs);
