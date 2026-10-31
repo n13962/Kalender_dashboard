@@ -5672,7 +5672,10 @@
             button.title = count ? `Im Einsatz: ${names}` : stale ? 'Feuerwehr-Daten evtl. veraltet' : 'Feuerwehr-Einsätze';
         }
 
-        function showFireAlertPopup(entry) {
+        const ALERT_POPUP_MS = 5000;
+        const GMUEND_DISTRICT = '05';
+
+        function showFireAlertPopup(entry, activeCount = fireClient.data?.activeCount || 1, districtName = '') {
             let container = document.getElementById('goal-popup-container');
             if (!container) {
                 container = document.createElement('div');
@@ -5688,9 +5691,9 @@
                 <p class="text-[11px] font-bold uppercase tracking-widest text-red-100">${entry.status === 'orange' ? '⚠️ Feuerwehr alarmiert' : '🚒 Feuerwehr ausgerückt'}</p>
                 <p class="mt-1 text-lg font-extrabold">${escapeHtml(entry.name)}</p>
                 ${(entry.info || []).map(line => `<p class="text-sm text-red-50">${escapeHtml(line)}</p>`).join('')}
-                <p class="mt-2 text-xs text-red-100">${escapeHtml(`${fireClient.data?.activeCount || 1} im Bezirk unterwegs`)}</p>`;
+                <p class="mt-2 text-xs text-red-100">${escapeHtml(`${activeCount} im Bezirk${districtName ? ` ${districtName}` : ''} unterwegs`)}</p>`;
             container.appendChild(popup);
-            setTimeout(() => popup.remove(), 20000);
+            setTimeout(() => popup.remove(), ALERT_POPUP_MS);
         }
 
         async function fetchFireData(force = false) {
@@ -5703,7 +5706,7 @@
                 const data = await response.json();
                 if (requestId !== fireClient.requestId || district !== fireClient.view.district) return;
                 const ids = new Set(data.history.map(item => item.id));
-                if (fireClient.seenIds) data.history.filter(item => !fireClient.seenIds.has(item.id) && fireStationVisible(item.stationId)).reverse().forEach(showFireAlertPopup);
+                if (fireClient.seenIds && district !== GMUEND_DISTRICT) data.history.filter(item => !fireClient.seenIds.has(item.id) && fireStationVisible(item.stationId)).reverse().forEach(showFireAlertPopup);
                 fireClient.seenIds = ids;
                 fireClient.data = data;
                 fireClient.error = false;
@@ -5716,7 +5719,26 @@
             if (state.currentTab === 'fire') renderFireTab();
         }
 
+        const gmuendWatch = { seenIds: null };
+
+        async function watchGmuendFire() {
+            if (document.hidden) return;
+            try {
+                const response = await fetch(`/api/fire?district=${GMUEND_DISTRICT}`, { cache: 'no-store' });
+                if (!response.ok) return;
+                const data = await response.json();
+                const history = Array.isArray(data.history) ? data.history : [];
+                if (gmuendWatch.seenIds) {
+                    history.filter(item => !gmuendWatch.seenIds.has(item.id)).reverse()
+                        .forEach(item => showFireAlertPopup(item, data.activeCount || 1, 'Gmünd'));
+                }
+                gmuendWatch.seenIds = new Set(history.map(item => item.id));
+            } catch (error) {}
+        }
+
         function startFireUpdates() {
+            watchGmuendFire();
+            setInterval(watchGmuendFire, FIRE_POLL_MS);
             loadFireView();
             loadFireDistricts();
             fetchFireData();
@@ -6075,8 +6097,40 @@
                 newsState.loading = false;
                 document.getElementById('news-refresh-icon')?.classList.remove('fa-spin');
                 updateNewsBadge();
+                announceNewBreakingNews();
                 if (state.currentTab === 'news') renderNewsTab();
             }
+        }
+
+        function showBreakingNewsPopup(item) {
+            let container = document.getElementById('goal-popup-container');
+            if (!container) {
+                container = document.createElement('div');
+                container.id = 'goal-popup-container';
+                container.setAttribute('aria-live', 'assertive');
+                container.className = 'fixed inset-x-3 top-3 z-[9999] flex flex-col items-center gap-2 pointer-events-none sm:left-auto sm:right-4 sm:w-96';
+                document.body.appendChild(container);
+            }
+            const popup = document.createElement('div');
+            popup.setAttribute('role', 'alert');
+            popup.className = 'pointer-events-auto w-full cursor-pointer rounded-2xl border border-amber-300/60 bg-slate-900 p-4 text-white shadow-2xl shadow-black/50';
+            popup.innerHTML = `
+                <p class="text-[11px] font-bold uppercase tracking-widest text-amber-300">🚨 Eilmeldung · ${escapeHtml(item.source)}</p>
+                <p class="mt-1 text-base font-extrabold leading-snug">${escapeHtml(item.title)}</p>`;
+            popup.onclick = () => { popup.remove(); newsState.scope = 'world'; switchTab('news'); };
+            container.appendChild(popup);
+            setTimeout(() => popup.remove(), ALERT_POPUP_MS);
+        }
+
+        function announceNewBreakingNews() {
+            const items = newsState.data?.breaking || [];
+            const key = 'familien-dashboard-breaking-seen';
+            let seen = null;
+            try { seen = JSON.parse(localStorage.getItem(key)); } catch (error) {}
+            const fresh = Array.isArray(seen) ? items.filter(item => !seen.includes(item.url)) : [];
+            if (Array.isArray(seen)) fresh.slice(0, 2).forEach(showBreakingNewsPopup);
+            const merged = [...new Set([...(Array.isArray(seen) ? seen : []), ...items.map(item => item.url)])].slice(-100);
+            try { localStorage.setItem(key, JSON.stringify(merged)); } catch (error) {}
         }
 
         function setNewsScope(key) {
@@ -6090,7 +6144,7 @@
         }
 
         setTimeout(() => loadNews(false), 8000);
-        setInterval(() => loadNews(true), 5 * 60 * 1000);
+        setInterval(() => loadNews(false), 2 * 60 * 1000);
 
         const cameraState = { cameras: [], events: [], live: new Set(), tick: 0, timer: null, eventsTimer: null, loading: false, error: '', haConfigured: false, busy: new Set(), failed: new Set() };
 
