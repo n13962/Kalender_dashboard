@@ -688,6 +688,7 @@ async function loadTennis() {
         for (const competition of singles?.competitions || []) {
             if ((competition.competitors || []).length < 2) continue;
             const state = competition.status?.type?.state;
+            if (/qualifying/i.test(competition.round?.displayName || '')) continue;
             if (state === 'in') live.push(parseTennisMatch(competition, event.name));
             else if (viennaDay(competition.startDate || competition.date) === today) today_.push(parseTennisMatch(competition, event.name));
         }
@@ -989,6 +990,48 @@ app.get('/api/winter/standings', async (req, res) => {
         res.set('Cache-Control', 'no-store').json(await winterStandings(sport, gender, winterNow()));
     } catch (error) {
         res.status(502).json({ error: 'Gesamtstand konnte nicht geladen werden.' });
+    }
+});
+
+async function winterSchedule(sport, gender, now) {
+    const today = viennaParts(now).iso;
+    let events;
+    if (sport === 'BT') {
+        const list = await ibuJson(`Events?SeasonId=${ibuSeasonId(now)}&Level=1`, 6 * 3600 * 1000);
+        const wanted = gender === 'M' ? ['SM', 'MX'] : ['SW', 'MX'];
+        events = await Promise.all(list
+            .filter(event => String(event.EndDate).slice(0, 10) >= today)
+            .sort((a, b) => String(a.StartDate).localeCompare(String(b.StartDate)))
+            .slice(0, 6)
+            .map(async event => {
+                const competitions = await ibuJson(`Competitions?EventId=${encodeURIComponent(event.EventId)}`, 6 * 3600 * 1000).catch(() => []);
+                const races = competitions.filter(race => wanted.includes(race.catId) && race.StartTime).map(race => {
+                    const start = new Date(race.StartTime);
+                    return { day: viennaParts(start).iso, time: start.toLocaleTimeString('de-AT', { timeZone: 'Europe/Vienna', hour: '2-digit', minute: '2-digit' }), name: String(race.ShortDescription || race.Description || '') };
+                }).filter(race => race.day >= today).sort((a, b) => `${a.day} ${a.time}`.localeCompare(`${b.day} ${b.time}`));
+                return { place: String(event.ShortDescription || event.Description || ''), nation: String(event.Nat || ''), start: String(event.StartDate).slice(0, 10), end: String(event.EndDate).slice(0, 10), races, known: competitions.length > 0 };
+            }));
+    } else {
+        const season = fisSeasonCode(now);
+        const list = (await fisEvents(sport, season)).filter(event => event.end >= today).sort((a, b) => a.start.localeCompare(b.start)).slice(0, 6);
+        events = await Promise.all(list.map(async event => {
+            const all = await fisEventRaces(sport, season, event, 6 * 3600 * 1000).catch(() => []);
+            const races = all.filter(race => race.gender === gender && race.day >= today).map(race => ({ day: race.day, time: race.time, name: race.name }))
+                .sort((a, b) => `${a.day} ${a.time}`.localeCompare(`${b.day} ${b.time}`));
+            return { place: event.place, nation: event.nation, start: event.start, end: event.end, races, known: all.length > 0 };
+        }));
+    }
+    return events.filter(event => event.races.length || !event.known).slice(0, 5);
+}
+
+app.get('/api/winter/schedule', async (req, res) => {
+    const sport = String(req.query.sport || '');
+    const gender = req.query.gender === 'W' ? 'W' : 'M';
+    if (!WINTER_SPORTS.includes(sport)) return res.status(400).json({ error: 'Unbekannte Sportart.' });
+    try {
+        res.set('Cache-Control', 'no-store').json({ sport, gender, events: await winterSchedule(sport, gender, winterNow()), updatedAt: new Date().toISOString() });
+    } catch (error) {
+        res.status(502).json({ error: 'Termine konnten nicht geladen werden.' });
     }
 });
 

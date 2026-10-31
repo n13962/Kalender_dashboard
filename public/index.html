@@ -5355,7 +5355,7 @@
             { key: 'bundesliga-de', label: 'Bundesliga Deutschland', icon: 'fa-flag' },
             { key: 'premier-league', label: 'Premier League', icon: 'fa-flag' },
             { key: 'la-liga', label: 'La Liga', icon: 'fa-flag' },
-            { key: 'tennis', label: 'Tennis (Herren)', icon: 'fa-baseball' },
+            { key: 'tennis', label: 'Tennis (ATP Herren)', icon: 'fa-baseball' },
             { key: 'darts', label: 'Darts', icon: 'fa-bullseye' },
             { key: 'winter-AL', label: 'Ski Alpin', icon: 'fa-person-skiing' },
             { key: 'winter-JP', label: 'Skispringen', icon: 'fa-person-skiing' },
@@ -5934,7 +5934,7 @@
             if (key.startsWith('winter-')) {
                 const views = document.getElementById('football-tab-views');
                 views.classList.remove('hidden');
-                views.innerHTML = segment(winterState.view === 'races', 'setWinterView', 'races', 'Rennen') + segment(winterState.view === 'standings', 'setWinterView', 'standings', 'Gesamtstand');
+                views.innerHTML = segment(winterState.view === 'races', 'setWinterView', 'races', 'Rennen') + segment(winterState.view === 'schedule', 'setWinterView', 'schedule', 'Termine') + segment(winterState.view === 'standings', 'setWinterView', 'standings', 'Gesamtstand');
                 filters.classList.remove('hidden');
                 filters.innerHTML = segment(winterState.gender === 'M', 'setWinterGender', 'M', 'Männer') + segment(winterState.gender === 'W', 'setWinterGender', 'W', 'Frauen');
                 renderWinterTab();
@@ -5966,7 +5966,7 @@
         }
 
 
-        const winterState = { view: 'races', gender: 'M', races: {}, standings: {}, errors: {}, fetchedAt: {}, loading: {}, open: {} };
+        const winterState = { view: 'races', gender: 'M', races: {}, standings: {}, schedule: {}, errors: {}, fetchedAt: {}, loading: {}, open: {} };
 
         function winterKey() {
             return `${footballTab.league.slice(7)}:${winterState.gender}`;
@@ -5987,14 +5987,14 @@
         async function loadWinter(force = false) {
             const key = winterKey();
             const [sport, gender] = key.split(':');
-            const kind = winterState.view === 'standings' ? 'standings' : 'races';
+            const kind = ['standings', 'schedule'].includes(winterState.view) ? winterState.view : 'races';
             const slot = `${kind}:${key}`;
             const live = kind === 'races' && winterState.races[key]?.races?.some(race => race.state === 'live');
-            const maxAge = kind === 'standings' ? 10 * 60000 : live ? 20000 : 90000;
+            const maxAge = kind === 'standings' ? 10 * 60000 : kind === 'schedule' ? 30 * 60000 : live ? 20000 : 90000;
             if (winterState.loading[slot] || (!force && winterState[kind][key] && Date.now() - (winterState.fetchedAt[slot] || 0) < maxAge)) return;
             winterState.loading[slot] = true;
             try {
-                const url = kind === 'standings' ? '/api/winter/standings' : '/api/winter';
+                const url = kind === 'standings' ? '/api/winter/standings' : kind === 'schedule' ? '/api/winter/schedule' : '/api/winter';
                 const response = await fetch(`${url}?sport=${sport}&gender=${gender}`, { cache: 'no-store' });
                 const result = await response.json();
                 if (!response.ok) throw new Error(result.error || 'Wintersport-Daten nicht verfügbar.');
@@ -6036,7 +6036,7 @@
             const content = document.getElementById('football-tab-content');
             const status = document.getElementById('football-tab-updated');
             const key = winterKey();
-            const kind = winterState.view === 'standings' ? 'standings' : 'races';
+            const kind = ['standings', 'schedule'].includes(winterState.view) ? winterState.view : 'races';
             const data = winterState[kind][key];
             const error = winterState.errors[`${kind}:${key}`];
             const box = text => `<p class="rounded-xl border border-indigo-500/15 bg-slate-950/60 px-4 py-6 text-center text-xs text-slate-400">${escapeHtml(text)}</p>`;
@@ -6046,6 +6046,17 @@
                 return;
             }
             const time = data.updatedAt ? new Date(data.updatedAt).toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' }) : '';
+            if (kind === 'schedule') {
+                status.textContent = 'Nächste Wettkämpfe';
+                const fmt = iso => new Date(`${iso}T12:00:00`).toLocaleDateString('de-AT', { day: '2-digit', month: '2-digit' });
+                const dayFmt = iso => new Date(`${iso}T12:00:00`).toLocaleDateString('de-AT', { weekday: 'short', day: '2-digit', month: '2-digit' });
+                content.innerHTML = data.events.length ? `<div class="space-y-2">${data.events.map(event => `
+                    <div class="rounded-xl border border-indigo-500/15 bg-slate-950/60 px-3 py-2.5">
+                        <div class="flex items-baseline justify-between gap-2"><span class="truncate text-sm font-bold text-slate-100">${escapeHtml(event.place)}${event.nation ? ` <span class="text-[10px] font-semibold text-slate-400">${escapeHtml(event.nation)}</span>` : ''}</span><span class="shrink-0 text-[11px] font-semibold text-amber-300">${fmt(event.start)}${event.end !== event.start ? `–${fmt(event.end)}` : ''}</span></div>
+                        ${event.races.length ? `<div class="mt-1.5 space-y-0.5 text-xs">${event.races.map(race => `<div class="flex gap-2"><span class="w-24 shrink-0 text-slate-400">${escapeHtml(dayFmt(race.day))} ${escapeHtml(race.time)}</span><span class="min-w-0 truncate text-slate-200">${escapeHtml(race.name)}</span></div>`).join('')}</div>` : '<p class="mt-1 text-[11px] text-slate-500">Einzelne Rennen noch nicht veröffentlicht.</p>'}
+                    </div>`).join('')}<p class="text-[10px] text-slate-500">Quellen: FIS / IBU. FIS-Zeiten in Ortszeit, IBU-Zeiten österreichische Zeit.</p></div>` : box('Aktuell sind keine kommenden Termine bekannt.');
+                return;
+            }
             if (kind === 'standings') {
                 status.textContent = `Gesamtstand ${data.season}${time ? ` · Stand ${time}` : ''}`;
                 const note = data.fallback ? `<p class="rounded-xl border border-amber-400/30 bg-amber-950/20 px-3 py-2 text-[11px] text-amber-200">Die neue Saison hat noch keine Wertung – angezeigt wird die Saison ${escapeHtml(data.season)}.</p>` : '';
