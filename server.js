@@ -634,7 +634,7 @@ function validateFireTelegramRecipients(recipients) {
         if (!/^-?\d{1,20}$/.test(chatId)) throw new Error(`Die Telegram-ID für ${name} ist ungültig.`);
         if (seenChatIds.has(chatId)) throw new Error('Eine Telegram-ID darf nur einmal eingetragen werden.');
         seenChatIds.add(chatId);
-        return { name, chatId, subscriptions };
+        return { name, chatId, subscriptions, goals: recipient?.goals !== false };
     });
 }
 
@@ -847,7 +847,9 @@ app.post('/api/fire/telegram-test', async (req, res) => {
     };
     const message = messages[req.body?.type] || '✅ Testnachricht vom Familien-Dashboard: Telegram-Benachrichtigungen funktionieren.';
     const requestedChatId = typeof req.body?.chatId === 'string' ? req.body.chatId.trim() : '';
-    const targets = requestedChatId ? fireTelegramRecipients.filter(recipient => recipient.chatId === requestedChatId) : fireTelegramRecipients;
+    const targets = requestedChatId
+        ? fireTelegramRecipients.filter(recipient => recipient.chatId === requestedChatId)
+        : fireTelegramRecipients.filter(recipient => req.body?.type !== 'goal' || recipient.goals !== false);
     if (!targets.length) return res.status(404).json({ error: 'Empfänger nicht gefunden.' });
     const results = await Promise.allSettled(targets.map(recipient => sendTelegramMessage(message, recipient)));
     const failed = results.flatMap((result, index) => result.status === 'rejected' ? [targets[index].name] : []);
@@ -1256,7 +1258,7 @@ function getFavoriteFootballTeamIds() {
 }
 
 async function sendFootballGoalAlert(match, scoringTeam) {
-    const recipients = fireTelegramRecipients.filter(recipient => recipient.chatId);
+    const recipients = fireTelegramRecipients.filter(recipient => recipient.chatId && recipient.goals !== false);
     const text = `⚽ TOR für ${scoringTeam.name}!\n${match.home.name} ${match.home.score} : ${match.away.score} ${match.away.name}\n${match.league}${match.status.detail ? ` · ${match.status.detail}` : ''}`;
     await Promise.allSettled(recipients.map(recipient => sendTelegramMessage(text, recipient)));
 }
@@ -1266,7 +1268,7 @@ async function checkFootballGoals() {
     try {
         const favorites = getFavoriteFootballTeamIds();
         const enabled = syncData.items[FOOTBALL_PUSH_KEY]?.value !== 'false';
-        if (!favorites.size || !enabled || !TELEGRAM_BOT_TOKEN || !TELEGRAM_AUTO_ALERTS || !fireTelegramRecipients.length) {
+        if (!favorites.size || !enabled || !TELEGRAM_BOT_TOKEN || !TELEGRAM_AUTO_ALERTS || !fireTelegramRecipients.some(recipient => recipient.goals !== false)) {
             footballGoalBaseline = null;
             return;
         }
