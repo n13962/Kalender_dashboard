@@ -1140,7 +1140,18 @@ app.get('/api/local-updates', async (req, res) => {
     }
 
     try {
-        localUpdatesRequest ||= fetchOrfNoeUpdates();
+        localUpdatesRequest ||= (async () => {
+            const trafficPattern = /\b(verkehr|stau|unfall|strassensperre|strassensperrung|umleitung|baustelle|fahrbahn|strasse gesperrt)\b/i;
+            const news = await loadNews();
+            return news.gmuend.slice(0, 20).map(item => ({
+                title: item.title,
+                description: item.description,
+                url: item.url,
+                publishedAt: item.publishedAt,
+                source: item.source,
+                type: trafficPattern.test(normalizeFeedText(`${item.title} ${item.description}`)) ? 'traffic' : 'news'
+            }));
+        })();
         const items = await localUpdatesRequest;
         localUpdatesCache = { fetchedAt: Date.now(), items };
         res.json({ items, updatedAt: new Date(localUpdatesCache.fetchedAt).toISOString() });

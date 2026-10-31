@@ -6624,7 +6624,7 @@
             else if (state.localUpdatesUpdatedAt) {
                 const updatedAt = new Date(state.localUpdatesUpdatedAt);
                 status.textContent = Number.isNaN(updatedAt.getTime())
-                    ? 'Quelle: ORF Niederösterreich'
+                    ? 'Quelle: MeinBezirk, ORF NÖ, Zeitungen'
                     : `Stand ${updatedAt.toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' })}`;
             } else status.textContent = 'Meldungen werden geladen …';
 
@@ -6636,20 +6636,20 @@
                         : 'Derzeit keine Meldungen mit erkanntem Bezug zum Bezirk Gmünd.';
                 list.innerHTML = `<p class="col-span-full rounded-xl border border-indigo-500/15 bg-slate-900/70 px-4 py-5 text-center text-xs text-slate-400">${escapeHtml(message)}</p>`;
             } else {
-                list.innerHTML = state.localUpdates.map(item => {
+                list.innerHTML = state.localUpdates.slice(0, 2).map(item => {
                     const isTraffic = item.type === 'traffic';
                     const publishedAt = item.publishedAt ? new Date(item.publishedAt) : null;
                     const dateLabel = publishedAt && !Number.isNaN(publishedAt.getTime())
                         ? publishedAt.toLocaleDateString('de-DE', { day: '2-digit', month: '2-digit' }) +
                             ` · ${publishedAt.toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' })}`
-                        : 'ORF Niederösterreich';
+                        : (item.source || 'Gmünd');
                     return `
                         <a href="${escapeHtml(item.url)}" target="_blank" rel="noopener noreferrer" class="local-update-card flex min-h-[88px] items-start gap-3 rounded-xl border border-indigo-500/20 bg-slate-900/80 p-3 text-left">
                             <span class="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg ${isTraffic ? 'bg-amber-400/10 text-amber-300' : 'bg-sky-400/10 text-sky-300'}"><i class="fa-solid ${isTraffic ? 'fa-road' : 'fa-newspaper'}"></i></span>
                             <span class="min-w-0 flex-1">
                                 <span class="mb-1 flex flex-wrap items-center gap-x-2 gap-y-1">
                                     <span class="rounded-full ${isTraffic ? 'bg-amber-400/10 text-amber-200' : 'bg-sky-400/10 text-sky-200'} px-2 py-0.5 text-[9px] font-bold uppercase tracking-wide">${isTraffic ? 'Verkehr' : 'Bezirk Gmünd'}</span>
-                                    <span class="text-[10px] text-slate-500">${escapeHtml(dateLabel)}</span>
+                                    <span class="text-[10px] text-slate-500">${escapeHtml(dateLabel)}${item.source ? ` · ${escapeHtml(item.source)}` : ''}</span>
                                 </span>
                                 <span class="block text-xs font-semibold leading-snug text-slate-100">${escapeHtml(item.title)}</span>
                                 ${item.description ? `<span class="mt-1 block text-[11px] leading-snug text-slate-400">${escapeHtml(item.description)}</span>` : ''}
