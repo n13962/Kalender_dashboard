@@ -1081,7 +1081,7 @@
                         <section id="dashboard-panel-live-sport" class="mt-3 hidden overflow-hidden rounded-2xl border border-rose-400/30 bg-slate-950/70 shadow-sm">
                             <div class="flex items-center justify-between gap-3 border-b border-rose-400/20 px-4 py-3">
                                 <h3 class="text-sm font-bold text-slate-100"><i class="football-live-indicator fa-solid fa-circle mr-2 text-[8px] text-rose-400"></i>Jetzt live im Sport</h3>
-                                <button type="button" onclick="switchTab('football'); setFootballTabLeague('tennis')" class="text-[11px] font-semibold text-emerald-300">Alle ansehen</button>
+                                <button type="button" onclick="switchTab('football')" class="text-[11px] font-semibold text-emerald-300">Alle ansehen</button>
                             </div>
                             <div id="live-sport-body" class="grid grid-cols-1 gap-2 p-3 sm:grid-cols-2"></div>
                         </section>
@@ -1657,7 +1657,17 @@
                         </label>
                         <div class="flex flex-wrap gap-2">
                             <button type="button" onclick="testFireTelegramType('goal', this)" class="min-h-10 rounded-xl border border-emerald-400/40 px-4 text-xs font-bold text-emerald-200 hover:bg-emerald-500/10"><i class="fa-solid fa-futbol"></i> Test-Tor an alle senden</button>
+                            <button type="button" onclick="testFireTelegramType('breaking', this)" class="min-h-10 rounded-xl border border-amber-400/40 px-4 text-xs font-bold text-amber-200 hover:bg-amber-500/10"><i class="fa-solid fa-bolt"></i> Test-Eilmeldung senden</button>
                             <button type="button" onclick="testFireTelegramType('fire', this)" class="min-h-10 rounded-xl border border-red-400/40 px-4 text-xs font-bold text-red-200 hover:bg-red-500/10"><i class="fa-solid fa-fire-extinguisher"></i> Test-Feuerwehralarm an alle senden</button>
+                        </div>
+                        <div class="space-y-2 rounded-xl border border-red-500/20 bg-slate-950 p-3">
+                            <label class="flex items-center gap-3 text-xs font-semibold text-slate-200">
+                                <input id="breaking-telegram-enabled" type="checkbox" checked onchange="setBreakingTelegramEnabled(this.checked)" class="h-4 w-4 rounded border-slate-700 bg-slate-900 text-red-500">
+                                <i class="fa-solid fa-bolt text-red-400"></i>
+                                <span>🚨 Eilmeldungen & tragische Ereignisse aus den News per Telegram senden</span>
+                            </label>
+                            <p class="text-[10px] text-slate-500">Hier festlegen, wer Eilmeldungen und Nachrichten über tragische Ereignisse (z. B. Anschläge, Unglücke, Katastrophen) bekommt:</p>
+                            <div id="breaking-telegram-recipients" class="grid gap-1 sm:grid-cols-2"></div>
                         </div>
                         <div class="space-y-2 rounded-xl border border-indigo-500/20 bg-slate-950 p-3">
                             <p class="text-xs font-semibold text-slate-200">Telegram-Empfänger</p>
@@ -3271,11 +3281,12 @@
 
         let fireTelegramRecipients = [];
         let fireTelegramEnabled = true;
+        let breakingTelegramEnabled = true;
         let fireSubEdit = null;
         const fireStationCache = {};
 
-        async function toggleRecipientGoals(index, checkbox) {
-            const recipients = fireTelegramRecipients.map((recipient, i) => i === index ? { ...recipient, goals: checkbox.checked } : recipient);
+        async function toggleRecipientGoals(index, checkbox, field = 'goals') {
+            const recipients = fireTelegramRecipients.map((recipient, i) => i === index ? { ...recipient, [field]: checkbox.checked } : recipient);
             checkbox.disabled = true;
             try {
                 await persistFireTelegramSettings(fireTelegramEnabled, recipients);
@@ -3386,7 +3397,34 @@
             }
         }
 
+        function renderBreakingRecipients() {
+            const container = document.getElementById('breaking-telegram-recipients');
+            document.getElementById('breaking-telegram-enabled').checked = breakingTelegramEnabled;
+            container.classList.toggle('opacity-50', !breakingTelegramEnabled);
+            container.innerHTML = fireTelegramRecipients.length
+                ? fireTelegramRecipients.map((recipient, index) => `
+                    <label class="flex min-h-8 items-center gap-2 text-[11px] text-slate-300"><input type="checkbox" ${recipient.breaking !== false ? 'checked' : ''} onchange="toggleRecipientGoals(${index}, this, 'breaking')" class="h-4 w-4 rounded border-slate-700 bg-slate-900 text-red-500"> ${escapeHtml(recipient.name)}</label>`).join('')
+                : '<p class="text-[11px] text-slate-500">Noch keine Empfänger eingetragen.</p>';
+        }
+
+        async function setBreakingTelegramEnabled(enabled) {
+            const toggle = document.getElementById('breaking-telegram-enabled');
+            const previous = breakingTelegramEnabled;
+            breakingTelegramEnabled = enabled;
+            toggle.disabled = true;
+            try {
+                await persistFireTelegramSettings(fireTelegramEnabled, fireTelegramRecipients);
+            } catch (error) {
+                breakingTelegramEnabled = previous;
+                toggle.checked = previous;
+                document.getElementById('fire-telegram-status').textContent = error.message || 'Einstellung konnte nicht gespeichert werden.';
+            } finally {
+                toggle.disabled = false;
+            }
+        }
+
         function renderFireTelegramRecipients() {
+            renderBreakingRecipients();
             const container = document.getElementById('fire-telegram-recipients');
             container.innerHTML = fireTelegramRecipients.length
                 ? fireTelegramRecipients.map((recipient, index) => `
@@ -3396,7 +3434,9 @@
                             <p class="truncate text-xs font-semibold text-slate-100">${escapeHtml(recipient.name)}</p>
                             <p class="truncate text-[10px] text-slate-400">${escapeHtml(recipient.chatId)}</p>
                             <p class="text-[10px] text-indigo-300">${escapeHtml(fireSubscriptionSummary(recipient))}</p>
-                            <label class="mt-1 flex min-h-8 items-center gap-2 text-[11px] text-slate-300"><input type="checkbox" ${recipient.goals !== false ? 'checked' : ''} onchange="toggleRecipientGoals(${index}, this)" class="h-4 w-4 rounded border-slate-700 bg-slate-900 text-emerald-500"> ⚽ Tor-Meldungen erhalten</label>
+                            <label class="mt-1 flex min-h-8 items-center gap-2 text-[11px] font-semibold text-slate-100"><input type="checkbox" ${recipient.active !== false ? 'checked' : ''} onchange="toggleRecipientGoals(${index}, this, 'active')" class="h-4 w-4 rounded border-slate-700 bg-slate-900 text-amber-500"> ✅ Telegram aktiv (alle Meldungen)</label>
+                            <label class="flex min-h-8 items-center gap-2 text-[11px] text-slate-300"><input type="checkbox" ${recipient.fire !== false ? 'checked' : ''} onchange="toggleRecipientGoals(${index}, this, 'fire')" class="h-4 w-4 rounded border-slate-700 bg-slate-900 text-red-500"> 🚒 Feuerwehr-Alarme erhalten</label>
+                            <label class="flex min-h-8 items-center gap-2 text-[11px] text-slate-300"><input type="checkbox" ${recipient.goals !== false ? 'checked' : ''} onchange="toggleRecipientGoals(${index}, this)" class="h-4 w-4 rounded border-slate-700 bg-slate-900 text-emerald-500"> ⚽ Tor-Meldungen erhalten</label>
                         </div>
                         <div class="flex shrink-0 flex-wrap items-center gap-1">
                             <button type="button" onclick="openFireSubEditor(${index})" aria-expanded="${fireSubEdit?.index === index}" class="rounded-lg px-2 py-2 text-xs text-indigo-300 hover:bg-indigo-500/10"><i class="fa-solid fa-fire-extinguisher"></i> Feuerwehren</button>
@@ -3419,6 +3459,7 @@
                     throw new Error('Der Dashboard-Server unterstützt die Empfängerliste noch nicht. Bitte den Server neu starten und die Seite neu laden.');
                 }
                 fireTelegramEnabled = result.enabled;
+                breakingTelegramEnabled = result.breakingEnabled !== false;
                 fireTelegramRecipients = result.recipients;
                 document.getElementById('fire-telegram-enabled').checked = fireTelegramEnabled;
                 renderFireTelegramRecipients();
@@ -3436,7 +3477,7 @@
             const response = await fetch('/api/fire/telegram-settings', {
                 method: 'PUT',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ enabled, recipients })
+                body: JSON.stringify({ enabled, recipients, breakingEnabled: breakingTelegramEnabled })
             });
             const result = await response.json();
             if (!response.ok) throw new Error(result.error || 'Einstellung konnte nicht gespeichert werden.');
@@ -3444,6 +3485,7 @@
                 throw new Error('Der Dashboard-Server unterstützt die Empfängerliste noch nicht. Bitte den Server neu starten und die Seite neu laden.');
             }
             fireTelegramEnabled = result.enabled;
+            breakingTelegramEnabled = result.breakingEnabled !== false;
             fireTelegramRecipients = result.recipients;
             document.getElementById('fire-telegram-enabled').checked = fireTelegramEnabled;
             renderFireTelegramRecipients();
@@ -3487,7 +3529,7 @@
             const button = document.getElementById('fire-telegram-add-button');
             button.disabled = true;
             try {
-                await persistFireTelegramSettings(fireTelegramEnabled, [...fireTelegramRecipients, { name, chatId, goals: true, subscriptions: [{ district: fireClient.view.district, stations: [] }] }]);
+                await persistFireTelegramSettings(fireTelegramEnabled, [...fireTelegramRecipients, { name, chatId, goals: true, breaking: true, fire: true, active: true, subscriptions: [{ district: fireClient.view.district, stations: [] }] }]);
                 nameInput.value = '';
                 idInput.value = '';
             } catch (error) {
@@ -6207,23 +6249,78 @@
             </div>`;
         }
 
+        const LIVE_SPORT_KEEP_MS = 5 * 60 * 1000;
+        const liveSportTracked = new Map();
+        const winterLive = { data: null, fetchedAt: 0, loading: false };
+
+        async function loadWinterLive() {
+            if (winterLive.loading || Date.now() - winterLive.fetchedAt < 45000) return;
+            winterLive.loading = true;
+            try {
+                const response = await fetch('/api/winter/live', { cache: 'no-store' });
+                if (response.ok) {
+                    winterLive.data = await response.json();
+                    winterLive.fetchedAt = Date.now();
+                }
+            } catch (error) {
+                // nächster Versuch beim nächsten Intervall
+            } finally {
+                winterLive.loading = false;
+                renderLiveSportPanel();
+            }
+        }
+
+        function collectLiveSportItems() {
+            const items = [];
+            const favorites = new Set(state.selectedFootballTeamIds);
+            for (const match of state.footballMatches || []) {
+                if (match.status.state === 'in') items.push({ id: `fb-${match.id}`, live: true, html: footballTabMatchRow(match, favorites) });
+                else if (match.status.state === 'post') items.push({ id: `fb-${match.id}`, live: false, html: footballTabMatchRow(match, favorites) });
+            }
+            for (const match of tennisState.data?.live || []) items.push({ id: `tn-${match.id}`, live: true, html: tennisMatchHtml(match) });
+            for (const match of tennisState.data?.finished || []) items.push({ id: `tn-${match.id}`, live: false, html: tennisMatchHtml(match) });
+            for (const event of dartsState.data?.live || []) items.push({ id: `dt-${event.id}`, live: event.status !== 'FT', html: dartsEventHtml(event, 'live') });
+            for (const race of winterLive.data?.races || []) {
+                const sportName = { AL: 'Ski Alpin', JP: 'Skispringen', CC: 'Langlauf', BT: 'Biathlon' }[race.sport] || race.sport;
+                const rows = race.rows.map(row => `<div class="flex items-center gap-2 text-xs"><span class="w-6 shrink-0 text-right font-bold tabular-nums text-amber-300">${escapeHtml(row.rank)}</span><span class="min-w-0 flex-1 truncate font-semibold text-slate-100">${escapeHtml(row.name)}</span><span class="shrink-0 text-[10px] text-slate-400">${escapeHtml(row.nat)}</span></div>`).join('');
+                const badge = race.state === 'live' ? '<span class="text-[10px] font-bold text-rose-300"><i class="football-live-indicator fa-solid fa-circle mr-1 text-[7px]"></i>Zwischenstand</span>' : '<span class="text-[10px] font-semibold text-slate-400">Beendet</span>';
+                items.push({ id: `wi-${race.id}`, live: race.state === 'live', html: `<div class="rounded-xl border ${race.state === 'live' ? 'border-rose-400/40 bg-rose-950/20' : 'border-indigo-500/15 bg-slate-950/60'} px-3 py-2.5">
+                    <div class="mb-1 flex items-start justify-between gap-2"><span class="min-w-0 truncate text-sm font-bold text-slate-100">${escapeHtml(sportName)} ${race.gender === 'W' ? 'Frauen' : 'Männer'} · ${escapeHtml(race.name)}</span>${badge}</div>
+                    <p class="mb-1 text-[11px] text-slate-400">${escapeHtml(race.place)}</p><div class="space-y-0.5">${rows}</div></div>` });
+            }
+            return items;
+        }
+
         function renderLiveSportPanel() {
             const panel = document.getElementById('dashboard-panel-live-sport');
             const body = document.getElementById('live-sport-body');
             if (!panel || !body) return;
-            const tennis = tennisState.data?.live || [];
-            const dartsToday = (dartsState.data?.live || []).filter(event => event.status !== 'FT');
-            panel.classList.toggle('hidden', !tennis.length && !dartsToday.length);
-            body.innerHTML = [
-                ...tennis.slice(0, 4).map(tennisMatchHtml),
-                ...dartsToday.map(event => dartsEventHtml(event, 'live'))
-            ].join('');
+            const now = Date.now();
+            const items = collectLiveSportItems();
+            const seen = new Set(items.map(item => item.id));
+            for (const item of items) {
+                const tracked = liveSportTracked.get(item.id);
+                if (item.live) liveSportTracked.set(item.id, { html: item.html, endedAt: null });
+                else if (tracked && !tracked.endedAt) liveSportTracked.set(item.id, { html: item.html, endedAt: now });
+                else if (tracked) tracked.html = item.html;
+            }
+            for (const [id, tracked] of liveSportTracked) {
+                if (!seen.has(id) && !tracked.endedAt) tracked.endedAt = now;
+                if (tracked.endedAt && now - tracked.endedAt > LIVE_SPORT_KEEP_MS) liveSportTracked.delete(id);
+            }
+            const entries = [...liveSportTracked.values()].sort((a, b) => Number(Boolean(a.endedAt)) - Number(Boolean(b.endedAt)));
+            panel.classList.toggle('hidden', !entries.length);
+            body.innerHTML = entries.map(entry => entry.endedAt
+                ? `<div class="opacity-70">${entry.html}<p class="mt-0.5 text-right text-[10px] text-slate-500">Beendet – verschwindet in ${Math.max(1, Math.ceil((LIVE_SPORT_KEEP_MS - (now - entry.endedAt)) / 60000))} Min.</p></div>`
+                : entry.html).join('');
         }
 
         function pollLiveSport() {
             if (document.hidden) return;
             loadTennis(false);
+            loadWinterLive();
             if (!dartsState.data || Date.now() - dartsState.fetchedAt > 5 * 60 * 1000) loadDarts(true);
+            renderLiveSportPanel();
         }
 
         setTimeout(pollLiveSport, 6000);

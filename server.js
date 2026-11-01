@@ -59,6 +59,7 @@ const HOME_ASSISTANT_SELECTION_FILE = path.join(DATA_DIR, '.home-assistant-selec
 const HOME_ASSISTANT_WEATHER_FILE = path.join(DATA_DIR, '.home-assistant-weather.json');
 const SHELLY_DEVICES_FILE = path.join(DATA_DIR, '.shelly-devices.json');
 const FIRE_TELEGRAM_SETTINGS_FILE = path.join(DATA_DIR, '.fire-telegram-settings.json');
+const FIRE_TELEGRAM_COOLDOWNS_FILE = path.join(DATA_DIR, '.fire-telegram-cooldowns.json');
 const AUSTRIAN_HOLIDAYS_URL = 'https://calendar.google.com/calendar/ical/de.austrian%23holiday%40group.v.calendar.google.com/public/basic.ics';
 const CALENDAR_SOURCE_COLORS = ['amber', 'emerald', 'rose', 'blue', 'violet', 'cyan', 'orange', 'lime', 'pink', 'teal'];
 const HOME_ASSISTANT_DOMAINS = ['light', 'switch', 'cover', 'fan', 'climate'];
@@ -993,6 +994,26 @@ app.get('/api/winter/standings', async (req, res) => {
     }
 });
 
+let winterLiveCache = { at: 0, data: null };
+
+app.get('/api/winter/live', async (req, res) => {
+    if (winterLiveCache.data && Date.now() - winterLiveCache.at < 30000) return res.set('Cache-Control', 'no-store').json(winterLiveCache.data);
+    const now = winterNow();
+    const today = viennaParts(now).iso;
+    const combos = WINTER_SPORTS.flatMap(sport => ['M', 'W'].map(gender => ({ sport, gender })));
+    const lists = await Promise.all(combos.map(async ({ sport, gender }) => {
+        try {
+            const races = sport === 'BT' ? await ibuWinterRaces(gender, now) : await fisWinterRaces(sport, gender, now);
+            return races.filter(race => race.state === 'live' || (race.state === 'done' && race.day === today))
+                .map(race => ({ ...race, sport, gender, rows: race.rows.slice(0, 5) }));
+        } catch (error) {
+            return [];
+        }
+    }));
+    winterLiveCache = { at: Date.now(), data: { races: lists.flat(), updatedAt: new Date().toISOString() } };
+    res.set('Cache-Control', 'no-store').json(winterLiveCache.data);
+});
+
 async function winterSchedule(sport, gender, now) {
     const today = viennaParts(now).iso;
     let events;
@@ -1167,13 +1188,16 @@ const FIRE_DISTRICTS = [
 ].map(([code, name]) => ({ code, name }));
 const FIRE_DISTRICT_CODES = new Set(FIRE_DISTRICTS.map(district => district.code));
 const FIRE_FEED_URL = 'https://www.feuerwehr-krems.at/CodePages/Wastl/GetDaten/GetWastlBezirkS3.asp?bezirk=';
-const FIRE_POLL_MS = 15000;
+const FIRE_POLL_MS = 30000;
+const FIRE_TELEGRAM_COOLDOWN_MS = 90 * 60 * 1000;
 const FIRE_VIEW_KEEP_MS = 10 * 60 * 1000;
 const FIRE_MAX_HISTORY = 50;
 const fireStates = new Map();
 const fireViewedAt = new Map();
 const fireTelegramPending = new Map();
+const fireTelegramCooldowns = new Map();
 let fireTelegramEnabled = true;
+let breakingTelegramEnabled = true;
 let fireTelegramRecipients = TELEGRAM_CHAT_ID ? [{ name: 'Christoph Meisel', chatId: TELEGRAM_CHAT_ID, subscriptions: [{ district: FIRE_DEFAULT_DISTRICT, stations: [] }] }] : [];
 
 function fireDistrictName(code) {
@@ -1195,6 +1219,7 @@ function loadFireTelegramSettings() {
     try {
         const saved = JSON.parse(fs.readFileSync(FIRE_TELEGRAM_SETTINGS_FILE, 'utf8'));
         if (typeof saved.enabled === 'boolean') fireTelegramEnabled = saved.enabled;
+        if (typeof saved.breakingEnabled === 'boolean') breakingTelegramEnabled = saved.breakingEnabled;
         if (Array.isArray(saved.recipients)) fireTelegramRecipients = validateFireTelegramRecipients(saved.recipients);
     } catch (error) {
         console.error('Telegram-Einstellungen für Feuerwehreinsätze konnten nicht geladen werden:', error.message);
@@ -1221,7 +1246,7 @@ function validateFireSubscriptions(subscriptions, name) {
 
 function fireTelegramDistricts() {
     if (!fireTelegramEnabled || !TELEGRAM_BOT_TOKEN) return [];
-    return [...new Set(fireTelegramRecipients.flatMap(recipient => recipient.subscriptions.map(subscription => subscription.district)))];
+    return [...new Set(fireTelegramRecipients.filter(recipient => recipient.active !== false && recipient.fire !== false).flatMap(recipient => recipient.subscriptions.map(subscription => subscription.district)))];
 }
 
 function validateFireTelegramRecipients(recipients) {
@@ -1235,15 +1260,40 @@ function validateFireTelegramRecipients(recipients) {
         if (!/^-?\d{1,20}$/.test(chatId)) throw new Error(`Die Telegram-ID für ${name} ist ungültig.`);
         if (seenChatIds.has(chatId)) throw new Error('Eine Telegram-ID darf nur einmal eingetragen werden.');
         seenChatIds.add(chatId);
-        return { name, chatId, subscriptions, goals: recipient?.goals !== false };
+        return { name, chatId, subscriptions, goals: recipient?.goals !== false, breaking: recipient?.breaking !== false, fire: recipient?.fire !== false, active: recipient?.active !== false };
     });
 }
 
-function saveFireTelegramSettings(enabled, recipients) {
+function saveFireTelegramSettings(enabled, recipients, breakingEnabled) {
     const temporaryFile = `${FIRE_TELEGRAM_SETTINGS_FILE}.tmp`;
-    fs.writeFileSync(temporaryFile, JSON.stringify({ enabled, recipients }), { encoding: 'utf8', mode: 0o600 });
+    fs.writeFileSync(temporaryFile, JSON.stringify({ enabled, breakingEnabled, recipients }), { encoding: 'utf8', mode: 0o600 });
     fs.renameSync(temporaryFile, FIRE_TELEGRAM_SETTINGS_FILE);
 }
+
+function loadFireTelegramCooldowns() {
+    if (!fs.existsSync(FIRE_TELEGRAM_COOLDOWNS_FILE)) return;
+    try {
+        const saved = JSON.parse(fs.readFileSync(FIRE_TELEGRAM_COOLDOWNS_FILE, 'utf8'));
+        const now = Date.now();
+        for (const [stationId, timestamp] of Object.entries(saved)) {
+            if (typeof timestamp === 'number' && Number.isFinite(timestamp) && now - timestamp < FIRE_TELEGRAM_COOLDOWN_MS) {
+                fireTelegramCooldowns.set(stationId, timestamp);
+            }
+        }
+    } catch (error) {
+        console.error('Telegram-Sperrzeiten für Feuerwehreinsätze konnten nicht geladen werden:', error.message);
+    }
+}
+
+function saveFireTelegramCooldowns() {
+    const now = Date.now();
+    const saved = Object.fromEntries([...fireTelegramCooldowns].filter(([, timestamp]) => now - timestamp < FIRE_TELEGRAM_COOLDOWN_MS));
+    const temporaryFile = `${FIRE_TELEGRAM_COOLDOWNS_FILE}.tmp`;
+    fs.writeFileSync(temporaryFile, JSON.stringify(saved), { encoding: 'utf8', mode: 0o600 });
+    fs.renameSync(temporaryFile, FIRE_TELEGRAM_COOLDOWNS_FILE);
+}
+
+loadFireTelegramCooldowns();
 
 async function sendTelegramMessage(text, recipient) {
     if (!TELEGRAM_BOT_TOKEN) throw new Error('Telegram ist nicht vollständig konfiguriert. Der Bot-Token muss in .env gesetzt sein.');
@@ -1264,10 +1314,12 @@ async function sendTelegramMessage(text, recipient) {
 
 async function sendFireTelegramAlert(district, summary, station, startedAt, status) {
     if (!fireTelegramEnabled || !TELEGRAM_BOT_TOKEN || !TELEGRAM_AUTO_ALERTS) return;
-    const recipients = fireTelegramRecipients.filter(recipient => recipient.subscriptions.some(subscription =>
+    const recipients = fireTelegramRecipients.filter(recipient => recipient.active !== false && recipient.fire !== false && recipient.subscriptions.some(subscription =>
         subscription.district === district && (!subscription.stations.length || subscription.stations.includes(station.id))));
     if (!recipients.length) return;
-    const alertId = `${district}:${station.id}:${status}`;
+    const alertId = `${district}:${station.id}`;
+    const lastAlertAt = fireTelegramCooldowns.get(alertId) ?? fireTelegramCooldowns.get(station.id);
+    if (lastAlertAt !== undefined && Date.now() - lastAlertAt < FIRE_TELEGRAM_COOLDOWN_MS) return;
     if (fireTelegramPending.has(alertId)) return;
     const districtName = summary?.name || fireDistrictName(district);
 
@@ -1280,7 +1332,9 @@ async function sendFireTelegramAlert(district, summary, station, startedAt, stat
             const message = [
                 status === 'orange'
                     ? `⚠️ FEUERWEHR ALARMIERT – Bezirk ${districtName}`
-                    : `🚒 Feuerwehr im Einsatz – Bezirk ${districtName}`,
+                    : status === 'out'
+                        ? `🚒 Feuerwehr ausgerückt – Bezirk ${districtName}`
+                        : `🚒 Feuerwehr im Einsatz – Bezirk ${districtName}`,
                 `Feuerwehr: ${station.name}`,
                 codeLine ? `Einsatzcode: ${codeLine}` : null,
                 placeLine ? placeLine.replace(/^Einsatzort:\s*/i, 'Einsatzort: ') : null,
@@ -1294,6 +1348,14 @@ async function sendFireTelegramAlert(district, summary, station, startedAt, stat
                     console.error(`Telegram-Benachrichtigung für ${recipients[index].name} fehlgeschlagen:`, error);
                 }
             });
+            if (results.some(result => result.status === 'fulfilled')) {
+                fireTelegramCooldowns.set(alertId, Date.now());
+                try {
+                    saveFireTelegramCooldowns();
+                } catch (error) {
+                    console.error('Telegram-Sperrzeit konnte nicht gespeichert werden:', error.message);
+                }
+            }
         } catch (error) {
             const message = error instanceof Error ? error.message.split(TELEGRAM_BOT_TOKEN).join('[redacted]') : 'Unbekannter Fehler';
             console.error(`Telegram-Benachrichtigung für ${station.name} fehlgeschlagen:`, message);
@@ -1363,7 +1425,7 @@ async function refreshFireData(district) {
         const previous = fireState.stations.get(station.id);
         const startedAt = station.status === 'red' ? (previous?.status === 'red' ? previous.startedAt : now) : null;
         next.set(station.id, { ...station, startedAt });
-        if (fireState.baseline && previous && previous.status !== station.status && ['red', 'orange'].includes(station.status)) {
+        if (fireState.baseline && previous && previous.status !== station.status && ['red', 'orange', 'out'].includes(station.status)) {
             fireState.history.unshift({ id: `${district}-${station.id}-${Date.now()}`, stationId: station.id, name: station.name, info: station.info, startedAt: now, status: station.status });
             fireState.history.length = Math.min(fireState.history.length, FIRE_MAX_HISTORY);
             void sendFireTelegramAlert(district, summary, station, now, station.status);
@@ -1475,6 +1537,7 @@ app.get('/api/fire', async (req, res) => {
 app.get('/api/fire/telegram-settings', (req, res) => {
     res.set('Cache-Control', 'no-store').json({
         enabled: fireTelegramEnabled,
+        breakingEnabled: breakingTelegramEnabled,
         configured: Boolean(TELEGRAM_BOT_TOKEN && fireTelegramRecipients.length),
         recipients: fireTelegramRecipients
     });
@@ -1489,12 +1552,15 @@ app.put('/api/fire/telegram-settings', (req, res) => {
         return res.status(400).json({ error: error.message });
     }
     try {
-        saveFireTelegramSettings(req.body.enabled, recipients);
+        const breakingEnabled = typeof req.body.breakingEnabled === 'boolean' ? req.body.breakingEnabled : breakingTelegramEnabled;
+        saveFireTelegramSettings(req.body.enabled, recipients, breakingEnabled);
         fireTelegramEnabled = req.body.enabled;
+        breakingTelegramEnabled = breakingEnabled;
         fireTelegramRecipients = recipients;
         pollFireDistricts();
         res.json({
             enabled: fireTelegramEnabled,
+            breakingEnabled: breakingTelegramEnabled,
             recipients: fireTelegramRecipients,
             configured: Boolean(TELEGRAM_BOT_TOKEN && fireTelegramRecipients.length)
         });
@@ -1510,13 +1576,14 @@ app.post('/api/fire/telegram-test', async (req, res) => {
     }
     const messages = {
         goal: '⚽ TEST – TOR für FC Beispiel!\nFC Beispiel 1 : 0 SK Muster\nÖsterreichische Bundesliga · 23\'\n(Das ist nur eine Testmeldung.)',
+        breaking: '🚨 TEST – EILMELDUNG\nBeispiel-Meldung der Redaktion\n(Das ist nur eine Testmeldung.)',
         fire: '⚠️ TEST – FEUERWEHR ALARMIERT – Bezirk Beispiel\nFeuerwehr: FF Beispiel\nEinsatzcode: B2 Gebäudebrand - Innenraum\nEinsatzort: Beispielort\n(Das ist nur eine Testmeldung.)'
     };
     const message = messages[req.body?.type] || '✅ Testnachricht vom Familien-Dashboard: Telegram-Benachrichtigungen funktionieren.';
     const requestedChatId = typeof req.body?.chatId === 'string' ? req.body.chatId.trim() : '';
     const targets = requestedChatId
         ? fireTelegramRecipients.filter(recipient => recipient.chatId === requestedChatId)
-        : fireTelegramRecipients.filter(recipient => req.body?.type !== 'goal' || recipient.goals !== false);
+        : fireTelegramRecipients.filter(recipient => recipient.active !== false && (req.body?.type !== 'goal' || recipient.goals !== false) && (req.body?.type !== 'breaking' || recipient.breaking !== false) && (req.body?.type !== 'fire' || recipient.fire !== false));
     if (!targets.length) return res.status(404).json({ error: 'Empfänger nicht gefunden.' });
     const results = await Promise.allSettled(targets.map(recipient => sendTelegramMessage(message, recipient)));
     const failed = results.flatMap((result, index) => result.status === 'rejected' ? [targets[index].name] : []);
@@ -1936,7 +2003,7 @@ function getFavoriteFootballTeamIds() {
 }
 
 async function sendFootballGoalAlert(match, scoringTeam) {
-    const recipients = fireTelegramRecipients.filter(recipient => recipient.chatId && recipient.goals !== false);
+    const recipients = fireTelegramRecipients.filter(recipient => recipient.chatId && recipient.active !== false && recipient.goals !== false);
     const text = `⚽ TOR für ${scoringTeam.name}!\n${match.home.name} ${match.home.score} : ${match.away.score} ${match.away.name}\n${match.league}${match.status.detail ? ` · ${match.status.detail}` : ''}`;
     await Promise.allSettled(recipients.map(recipient => sendTelegramMessage(text, recipient)));
 }
@@ -1946,7 +2013,7 @@ async function checkFootballGoals() {
     try {
         const favorites = getFavoriteFootballTeamIds();
         const enabled = syncData.items[FOOTBALL_PUSH_KEY]?.value !== 'false';
-        if (!favorites.size || !enabled || !TELEGRAM_BOT_TOKEN || !TELEGRAM_AUTO_ALERTS || !fireTelegramRecipients.some(recipient => recipient.goals !== false)) {
+        if (!favorites.size || !enabled || !TELEGRAM_BOT_TOKEN || !TELEGRAM_AUTO_ALERTS || !fireTelegramRecipients.some(recipient => recipient.active !== false && recipient.goals !== false)) {
             footballGoalBaseline = null;
             return;
         }
@@ -1983,6 +2050,44 @@ async function checkFootballGoals() {
 }
 
 setTimeout(checkFootballGoals, 15000).unref();
+
+const BREAKING_PUSH_MS = 60 * 1000;
+const BREAKING_PUSH_MAX_AGE_MS = 3 * 3600 * 1000;
+const TRAGIC_PATTERN = /\b(tote?n?|todesopfer|getötet|ums leben|tödlich|massaker|anschlag|attentat|terror|amok|geisel|absturz|abgestürzt|flugzeugunglück|zugunglück|unglück|katastrophe|einsturz|eingestürzt|erdbeben|tsunami|überschwemmung|hochwasser|waldbrand|erdrutsch|vulkanausbruch|explosion|schüsse|raketenangriff|luftangriff|killed|dead|death toll|dies|died|massacre|disaster|collapse|earthquake|flood|wildfire|crash|shooting|attack|hostage|explosion)\b/i;
+let breakingSeen = null;
+
+async function checkBreakingNews() {
+    try {
+        const recipients = fireTelegramRecipients.filter(recipient => recipient.chatId && recipient.active !== false && recipient.breaking !== false);
+        if (!breakingTelegramEnabled || !recipients.length || !TELEGRAM_BOT_TOKEN || !TELEGRAM_AUTO_ALERTS) {
+            breakingSeen = null;
+            return;
+        }
+        newsCache.clear();
+        newsInFlight ||= loadNews().finally(() => { newsInFlight = null; });
+        const news = await newsInFlight;
+        const cutoff = Date.now() - BREAKING_PUSH_MAX_AGE_MS;
+        const seenUrls = new Set();
+        const items = [...news.world, ...news.austria]
+            .filter(item => !seenUrls.has(item.url) && seenUrls.add(item.url))
+            .filter(item => (Date.parse(item.publishedAt) || 0) >= cutoff)
+            .map(item => ({ ...item, level: BREAKING_MARKER.test(item.title) ? 'eil' : TRAGIC_PATTERN.test(item.title) ? 'tragisch' : '' }))
+            .filter(item => item.level);
+        const keyOf = item => item.url.replace(/[?#].*$/, '');
+        const previous = breakingSeen;
+        breakingSeen = new Set([...(previous || []), ...items.map(keyOf)]);
+        if (!previous) return;
+        for (const item of items.filter(item => !previous.has(keyOf(item)))) {
+            const text = `${item.level === 'eil' ? '🚨 EILMELDUNG' : '⚠️ TRAGISCHES EREIGNIS'} – ${item.source}\n${item.title}${item.description ? `\n${item.description}` : ''}\n${item.url}`;
+            await Promise.allSettled(recipients.map(recipient => sendTelegramMessage(text, recipient)));
+        }
+    } catch (error) {
+        console.error('Eilmeldungs-Überwachung fehlgeschlagen:', error.message);
+    }
+}
+
+setInterval(checkBreakingNews, BREAKING_PUSH_MS).unref();
+setTimeout(checkBreakingNews, 20000).unref();
 
 function getFootballLeagueView(req, res) {
     const view = Object.hasOwn(FOOTBALL_LEAGUE_VIEWS, req.params.league) ? FOOTBALL_LEAGUE_VIEWS[req.params.league] : null;
